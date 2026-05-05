@@ -22,6 +22,7 @@ jobs:
       run: dotnet build -bl -c release -m:1
     - name: Pack projects
       run: |
+        dotnet pack src/RoslynPad.Themes --configuration Release -bl -m:1
         dotnet pack src/RoslynPad.Editor.Avalonia --configuration Release -bl -m:1
         dotnet pack src/RoslynPad.Roslyn.Avalonia --configuration Release -bl -m:1
         dotnet pack src/RoslynPad.Roslyn --configuration Release -bl -m:1
@@ -34,6 +35,7 @@ jobs:
         ls -l src/RoslynPad.Editor.Avalonia/bin/Release
     - name: Push
       run: |
+        dotnet nuget push "src/RoslynPad.Themes/bin/Release/*.nupkg" --skip-duplicate --api-key ${{ github.token }} --source "github"
         dotnet nuget push "src/RoslynPad.Editor.Avalonia/bin/Release/*.nupkg" --skip-duplicate --api-key ${{ github.token }} --source "github"
         dotnet nuget push "src/RoslynPad.Roslyn.Avalonia/bin/Release/*.nupkg" --skip-duplicate --api-key ${{ github.token }} --source "github"
         dotnet nuget push "src/RoslynPad.Roslyn/bin/Release/*.nupkg" --skip-duplicate --api-key ${{ github.token }} --source "github"
