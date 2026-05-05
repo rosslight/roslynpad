@@ -1,6 +1,4 @@
-﻿using System.Composition;
-using System.Windows;
-using Avalon.Windows.Dialogs;
+﻿using Avalon.Windows.Dialogs;
 using RoslynPad.UI;
 
 namespace RoslynPad;
@@ -27,8 +25,8 @@ internal class FolderBrowserDialogAdapter : IFolderBrowserDialog
         set => _dialog.SelectedPath = value;
     }
 
-    public bool? Show()
+    public Task<bool?> ShowAsync()
     {
-        return _dialog.ShowDialog(Application.Current.MainWindow);
+        return Task.FromResult(_dialog.ShowDialog(Application.Current.MainWindow));
     }
 }

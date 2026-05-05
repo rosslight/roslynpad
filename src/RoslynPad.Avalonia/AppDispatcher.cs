@@ -1,8 +1,4 @@
-﻿using System;
-using System.Composition;
-using System.Threading;
-using System.Threading.Tasks;
-using RoslynPad.UI;
+﻿using RoslynPad.UI;
 using Avalonia.Threading;
 
 namespace RoslynPad;

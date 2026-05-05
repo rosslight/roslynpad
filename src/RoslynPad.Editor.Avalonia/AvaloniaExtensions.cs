@@ -1,12 +1,8 @@
-﻿using Avalonia;
-using Avalonia.Controls;
+﻿using System.Runtime.CompilerServices;
 using Avalonia.Controls.Primitives;
-using Avalonia.Input;
-using Avalonia.Media;
-using Avalonia.Threading;
 using Avalonia.VisualTree;
-using System;
-using System.Collections.Generic;
+
+#pragma warning disable IDE0060 // Remove unused parameter
 
 namespace RoslynPad.Editor;
 
@@ -17,7 +13,7 @@ internal static class AvaloniaExtensions
     {
         Control? result = control;
 
-        while (result != null && !(result is T))
+        while (result != null && result is not T)
         {
             result = result.Parent as Control;
         }
@@ -92,4 +88,17 @@ internal static class AvaloniaExtensions
     public static void SetContent(this ToolTip toolTip, Control control, object content) => ToolTip.SetTip(control, content);
 
     public static void Open(this FlyoutBase flyout, Control control) => flyout.ShowAt(control);
+
+    public static DispatcherYieldAwaiter GetAwaiter(this Dispatcher dispatcher) => new(dispatcher, default);
+
+    public readonly struct DispatcherYieldAwaiter(Dispatcher dispatcher, DispatcherPriority priority) : ICriticalNotifyCompletion
+    {
+        public bool IsCompleted => dispatcher.CheckAccess();
+
+        public void GetResult() => dispatcher.VerifyAccess();
+
+        public void OnCompleted(Action continuation) => dispatcher.Post(continuation, priority);
+
+        public void UnsafeOnCompleted(Action continuation) => OnCompleted(continuation);
+    }
 }

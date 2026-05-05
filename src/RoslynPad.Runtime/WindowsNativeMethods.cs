@@ -1,9 +1,8 @@
-﻿using System;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace RoslynPad.Runtime;
 
-internal static class WindowsNativeMethods
+internal static partial class WindowsNativeMethods
 {
     internal static void DisableWer()
     {
@@ -18,11 +17,23 @@ internal static class WindowsNativeMethods
             ErrorMode.SEM_NOGPFAULTERRORBOX);
     }
 
+#if NET8_0_OR_GREATER
+    [LibraryImport("kernel32")]
+    private static partial
+#else
     [DllImport("kernel32", PreserveSig = true)]
-    private static extern ErrorMode SetErrorMode(ErrorMode mode);
+    private static extern 
+#endif
+    ErrorMode SetErrorMode(ErrorMode mode);
 
+#if NET8_0_OR_GREATER
+    [LibraryImport("kernel32")]
+    private static partial
+#else
     [DllImport("kernel32", PreserveSig = true)]
-    private static extern ErrorMode GetErrorMode();
+    private static extern 
+#endif
+    ErrorMode GetErrorMode();
 
     [Flags]
     private enum ErrorMode

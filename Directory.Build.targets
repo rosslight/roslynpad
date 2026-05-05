@@ -1,16 +1,38 @@
 <Project>
   <ItemGroup Condition=" '$(CopyRoslynPadRuntimeAssemblies)' == 'true' ">
-    <ProjectReference Include="$(RepoRoot)\src\RoslynPad.Runtime\RoslynPad.Runtime.csproj" SetTargetFramework="TargetFramework=$(LtsTargetFramework)" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="$(RepoRoot)\src\RoslynPad.Runtime\RoslynPad.Runtime.csproj" SetTargetFramework="TargetFramework=netstandard2.0" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="$(RepoRoot)src\RoslynPad.Runtime\RoslynPad.Runtime.csproj" SetTargetFramework="TargetFramework=$(EarliestSupportedTargetFramework)" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="RuntimeIdentifier" />
+    <ProjectReference Include="$(RepoRoot)src\RoslynPad.Runtime\RoslynPad.Runtime.csproj" SetTargetFramework="TargetFramework=netstandard2.0" ReferenceOutputAssembly="false" GlobalPropertiesToRemove="RuntimeIdentifier" />
   </ItemGroup>
   <Target Name="CopyRoslynPadRuntimeAssembliesOnBuild" AfterTargets="Build"
           Condition=" '$(CopyRoslynPadRuntimeAssemblies)' == 'true' ">
-    <Copy SourceFiles="$(RepoRoot)\src\RoslynPad.Runtime\bin\$(Configuration)\$(LtsTargetFramework)\RoslynPad.Runtime.dll" DestinationFolder="$(OutputPath)\runtimes\net" />
-    <Copy SourceFiles="$(RepoRoot)\src\RoslynPad.Runtime\bin\$(Configuration)\netstandard2.0\RoslynPad.Runtime.dll" DestinationFolder="$(OutputPath)\runtimes\netfx" />
+    <PropertyGroup>
+      <_RoslynPadRuntimeOutputPath Condition=" '$(IsMacBuild)' == 'true' ">$(PublishDir)/../RoslynPad.app/Contents/MonoBundle</_RoslynPadRuntimeOutputPath>
+      <_RoslynPadRuntimeOutputPath Condition=" '$(_RoslynPadRuntimeOutputPath)' == '' ">$(OutputPath)</_RoslynPadRuntimeOutputPath>
+    </PropertyGroup>
+    <Copy SourceFiles="$(RepoRoot)src\RoslynPad.Runtime\bin\$(Configuration)\$(EarliestSupportedTargetFramework)\RoslynPad.Runtime.dll" DestinationFolder="$(_RoslynPadRuntimeOutputPath)\runtimes\net" />
+    <Copy SourceFiles="$(RepoRoot)src\RoslynPad.Runtime\bin\$(Configuration)\netstandard2.0\RoslynPad.Runtime.dll" DestinationFolder="$(_RoslynPadRuntimeOutputPath)\runtimes\netfx" />
   </Target>
   <Target Name="CopyRoslynPadRuntimeAssembliesOnPublish" AfterTargets="Publish"
           Condition=" '$(CopyRoslynPadRuntimeAssemblies)' == 'true' ">
-    <Copy SourceFiles="$(RepoRoot)\src\RoslynPad.Runtime\bin\$(Configuration)\$(LtsTargetFramework)\RoslynPad.Runtime.dll" DestinationFolder="$(PublishDir)\runtimes\net" />
-    <Copy SourceFiles="$(RepoRoot)\src\RoslynPad.Runtime\bin\$(Configuration)\netstandard2.0\RoslynPad.Runtime.dll" DestinationFolder="$(PublishDir)\runtimes\netfx" />
+    <Copy SourceFiles="$(RepoRoot)src\RoslynPad.Runtime\bin\$(Configuration)\$(EarliestSupportedTargetFramework)\RoslynPad.Runtime.dll" DestinationFolder="$(PublishDir)\runtimes\net" />
+    <Copy SourceFiles="$(RepoRoot)src\RoslynPad.Runtime\bin\$(Configuration)\netstandard2.0\RoslynPad.Runtime.dll" DestinationFolder="$(PublishDir)\runtimes\netfx" />
+  </Target>
+  <!-- hack to make macOS asset packaging (actool) work on non-Catalyst builds -->
+  <Target Name="Before_CoreCompileImageAssets" BeforeTargets="_CoreCompileImageAssets">
+    <PropertyGroup>
+      <Original_SdkPlatform>$(_SdkPlatform)</Original_SdkPlatform>
+      <_SdkPlatform>MacCatalyst</_SdkPlatform>
+      <Original_UIDeviceFamily>$(_UIDeviceFamily)</Original_UIDeviceFamily>
+      <_UIDeviceFamily>IPad</_UIDeviceFamily>
+      <Original_ComputedTargetFrameworkMoniker>$(_ComputedTargetFrameworkMoniker)</Original_ComputedTargetFrameworkMoniker>
+      <_ComputedTargetFrameworkMoniker>$(_ComputedTargetFrameworkMoniker.Replace('=macos', '=maccatalyst'))</_ComputedTargetFrameworkMoniker>
+    </PropertyGroup>
+  </Target>
+  <Target Name="After_CoreCompileImageAssets" AfterTargets="_CoreCompileImageAssets">
+    <PropertyGroup>
+      <_SdkPlatform>$(Original_SdkPlatform)</_SdkPlatform>
+      <_UIDeviceFamily>$(Original_UIDeviceFamily)</_UIDeviceFamily>
+      <_ComputedTargetFrameworkMoniker>$(Original_ComputedTargetFrameworkMoniker)</_ComputedTargetFrameworkMoniker>
+    </PropertyGroup>
   </Target>
 </Project>

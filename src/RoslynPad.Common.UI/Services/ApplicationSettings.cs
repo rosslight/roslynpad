@@ -1,9 +1,8 @@
-﻿using System;
-using System.Composition;
-using System.IO;
+﻿using System.Composition;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RoslynPad.Themes;
 
 namespace RoslynPad.UI;
 
@@ -19,18 +18,30 @@ internal class ApplicationSettings : IApplicationSettings
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        Converters =
+        {
+            new JsonStringEnumConverter()
+        }
     };
 
     private readonly ITelemetryProvider? _telemetryProvider;
+    private readonly IKeyBindingService _keyBindingService;
     private SerializableValues _values;
     private string? _path;
 
     [ImportingConstructor]
-    public ApplicationSettings([Import(AllowDefault = true)] ITelemetryProvider telemetryProvider)
+    public ApplicationSettings(
+        IKeyBindingService keyBindingService,
+        [Import(AllowDefault = true)] ITelemetryProvider telemetryProvider)
     {
+        _keyBindingService = keyBindingService;
         _telemetryProvider = telemetryProvider;
         _values = new SerializableValues();
         InitializeValues();
+
+        // Initialize static accessor for use in XAML converters
+        KeyBindings.Service = keyBindingService;
     }
 
     private void InitializeValues()
@@ -80,6 +91,7 @@ internal class ApplicationSettings : IApplicationSettings
         if (!File.Exists(path))
         {
             _values.LoadDefaultSettings();
+            _keyBindingService.LoadOverrides(_values);
             return;
         }
 
@@ -94,6 +106,8 @@ internal class ApplicationSettings : IApplicationSettings
             _values.LoadDefaultSettings();
             _telemetryProvider?.ReportError(e);
         }
+
+        _keyBindingService.LoadOverrides(_values);
     }
 
     private void SaveSettings()
@@ -116,25 +130,6 @@ internal class ApplicationSettings : IApplicationSettings
         private const int LiveModeDelayMsDefault = 2000;
         private const int DefaultFontSize = 12;
 
-        private bool _sendErrors;
-        private string? _latestVersion;
-        private string? _windowBounds;
-        private string? _dockLayout;
-        private string? _windowState;
-        private double _editorFontSize = DefaultFontSize;
-        private double _outputFontSize = DefaultFontSize;
-        private string? _documentPath;
-        private bool _searchFileContents;
-        private bool _searchUsingRegex;
-        private bool _optimizeCompilation;
-        private int _liveModeDelayMs = LiveModeDelayMsDefault;
-        private bool _searchWhileTyping;
-        private bool _enableBraceCompletion = true;
-        private string _defaultPlatformName = string.Empty;
-        private double? _windowFontSize;
-        private bool _formatDocumentOnComment = true;
-        private string? _effectiveDocumentPath;
-
         public void LoadDefaultSettings()
         {
             SendErrors = true;
@@ -142,108 +137,183 @@ internal class ApplicationSettings : IApplicationSettings
             EditorFontSize = DefaultFontSize;
             OutputFontSize = DefaultFontSize;
             LiveModeDelayMs = LiveModeDelayMsDefault;
+            EditorFontFamily = GetDefaultPlatformFontFamily();
+            DefaultUsings = GetDefaultUsings();
+        }
+
+        private static string[] GetDefaultUsings() => [
+            "System",
+            "System.Threading",
+            "System.Threading.Tasks",
+            "System.Collections",
+            "System.Collections.Generic",
+            "System.Text",
+            "System.Text.RegularExpressions",
+            "System.Linq",
+            "System.IO",
+            "System.Reflection",
+            "RoslynPad.Runtime",
+        ];
+
+        private static string GetDefaultPlatformFontFamily()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return "Cascadia Code,Consolas";
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                return "Menlo";
+            }
+            else
+            {
+                return "Monospace";
+            }
+        }
+
+        public IList<KeyBinding>? KeyBindings
+        {
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool SendErrors
         {
-            get => _sendErrors;
-            set => SetProperty(ref _sendErrors, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool EnableBraceCompletion
         {
-            get => _enableBraceCompletion;
-            set => SetProperty(ref _enableBraceCompletion, value);
-        }
+            get;
+            set => SetProperty(ref field, value);
+        } = true;
 
         public string? LatestVersion
         {
-            get => _latestVersion;
-            set => SetProperty(ref _latestVersion, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public string? WindowBounds
         {
-            get => _windowBounds;
-            set => SetProperty(ref _windowBounds, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
+        [JsonPropertyName("dockLayoutV2")]
         public string? DockLayout
         {
-            get => _dockLayout;
-            set => SetProperty(ref _dockLayout, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public string? WindowState
         {
-            get => _windowState;
-            set => SetProperty(ref _windowState, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public double EditorFontSize
         {
-            get => _editorFontSize;
-            set => SetProperty(ref _editorFontSize, value);
-        }
+            get;
+            set => SetProperty(ref field, value);
+        } = DefaultFontSize;
+
+        public string EditorFontFamily
+        {
+            get;
+            set => SetProperty(ref field, value);
+        } = GetDefaultPlatformFontFamily();
 
         public double OutputFontSize
         {
-            get => _outputFontSize;
-            set => SetProperty(ref _outputFontSize, value);
-        }
+            get;
+            set => SetProperty(ref field, value);
+        } = DefaultFontSize;
 
         public string? DocumentPath
         {
-            get => _documentPath;
-            set => SetProperty(ref _documentPath, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool SearchFileContents
         {
-            get => _searchFileContents;
-            set => SetProperty(ref _searchFileContents, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool SearchUsingRegex
         {
-            get => _searchUsingRegex;
-            set => SetProperty(ref _searchUsingRegex, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool OptimizeCompilation
         {
-            get => _optimizeCompilation;
-            set => SetProperty(ref _optimizeCompilation, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public int LiveModeDelayMs
         {
-            get => _liveModeDelayMs;
-            set => SetProperty(ref _liveModeDelayMs, value);
-        }
+            get;
+            set => SetProperty(ref field, value);
+        } = LiveModeDelayMsDefault;
 
         public bool SearchWhileTyping
         {
-            get => _searchWhileTyping;
-            set => SetProperty(ref _searchWhileTyping, value);
+            get;
+            set => SetProperty(ref field, value);
+        }
+
+        public string? SdkLocation
+        {
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public string DefaultPlatformName
         {
-            get => _defaultPlatformName;
-            set => SetProperty(ref _defaultPlatformName, value);
-        }
+            get;
+            set => SetProperty(ref field, value);
+        } = string.Empty;
 
         public double? WindowFontSize
         {
-            get => _windowFontSize;
-            set => SetProperty(ref _windowFontSize, value);
+            get;
+            set => SetProperty(ref field, value);
         }
 
         public bool FormatDocumentOnComment
         {
-            get => _formatDocumentOnComment;
-            set => SetProperty(ref _formatDocumentOnComment, value);
+            get;
+            set => SetProperty(ref field, value);
+        } = true;
+
+        public string? CustomThemePath
+        {
+            get;
+            set => SetProperty(ref field, value);
+        }
+
+        public ThemeType? CustomThemeType
+        {
+            get;
+            set => SetProperty(ref field, value);
+        }
+
+        public BuiltInTheme BuiltInTheme
+        {
+            get;
+            set => SetProperty(ref field, value);
+        }
+
+        public string[]? DefaultUsings
+        {
+            get;
+            set => SetProperty(ref field, value);
         }
 
         [JsonIgnore]
@@ -251,20 +321,20 @@ internal class ApplicationSettings : IApplicationSettings
         {
             get
             {
-                if (_effectiveDocumentPath == null)
+                if (field == null)
                 {
 
                     var userDefinedPath = DocumentPath;
-                    _effectiveDocumentPath = !string.IsNullOrEmpty(userDefinedPath) && Directory.Exists(userDefinedPath)
+                    field = !string.IsNullOrEmpty(userDefinedPath) && Directory.Exists(userDefinedPath)
                         ? userDefinedPath!
                         : Settings?.GetDefaultDocumentPath() ?? string.Empty;
                 }
 
-                return _effectiveDocumentPath;
+                return field;
             }
         }
 
         [JsonIgnore]
-        public IApplicationSettings? Settings { get; set; }
+        public ApplicationSettings? Settings { get; set; }
     }
 }

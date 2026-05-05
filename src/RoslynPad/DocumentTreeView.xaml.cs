@@ -1,11 +1,5 @@
-﻿using System;
-using System.Collections;
-using System.Diagnostics;
-using System.Globalization;
-using System.Threading.Tasks;
-using System.Windows;
-using System.Windows.Data;
-using System.Windows.Input;
+﻿#pragma warning disable CS8618
+
 using RoslynPad.UI;
 
 namespace RoslynPad;
@@ -14,9 +8,7 @@ public partial class DocumentTreeView
 {
     private MainViewModel _viewModel;
 
-#pragma warning disable CS8618 // Non-nullable field is uninitialized.
     public DocumentTreeView()
-#pragma warning restore CS8618 // Non-nullable field is uninitialized.
     {
         InitializeComponent();
 
@@ -54,14 +46,23 @@ public partial class DocumentTreeView
     {
         if (((FrameworkElement)e.Source).DataContext is DocumentViewModel documentViewModel)
         {
-            if (documentViewModel.IsFolder)
-            {
-                _ = Task.Run(() => Process.Start(new ProcessStartInfo { FileName = documentViewModel.Path, UseShellExecute = true }));
-            }
-            else
-            {
-                _ = Task.Run(() => Process.Start("explorer.exe", "/select," + documentViewModel.Path));
-            }
+            _viewModel.OpenDocumentInExplorer(documentViewModel);
+        }
+    }
+
+    private async void DocumentsContextMenu_Rename_Click(object? sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)e.Source).DataContext is DocumentViewModel documentViewModel && !documentViewModel.IsFolder)
+        {
+            await _viewModel.RenameDocument(documentViewModel).ConfigureAwait(true);
+        }
+    }
+
+    private async void DocumentsContextMenu_SaveAs_Click(object? sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)e.Source).DataContext is DocumentViewModel documentViewModel && !documentViewModel.IsFolder)
+        {
+            await _viewModel.SaveDocumentAs(documentViewModel).ConfigureAwait(true);
         }
     }
 
@@ -89,7 +90,7 @@ internal class FilterCollectionViewConverter : IValueConverter
 
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        if (value is IList list)
+        if (value is System.Collections.IList list)
         {
             var collectionView = new ListCollectionView(list)
             {

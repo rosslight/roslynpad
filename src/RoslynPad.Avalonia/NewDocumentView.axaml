@@ -1,7 +1,9 @@
 ﻿<UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="RoslynPad.NewDocumentView"
-             xmlns:roslyn="clr-namespace:Microsoft.CodeAnalysis;assembly=Microsoft.CodeAnalysis">
+             xmlns:local="clr-namespace:RoslynPad;assembly=RoslynPad"
+             xmlns:roslyn="clr-namespace:Microsoft.CodeAnalysis;assembly=Microsoft.CodeAnalysis"
+             x:DataType="local:MainViewModelAvalonia">
   <UniformGrid HorizontalAlignment="Center"
                VerticalAlignment="Center">
 
@@ -14,7 +16,7 @@
         <Image Source="{StaticResource CsFile}"
                Width="64"
                Height="64" />
-        <TextBlock Text="New&#xA;(Ctrl+N)"
+        <TextBlock Text="{OnPlatform New&#xA;(Ctrl+N), macOS=New&#xA;(⌘ N)}"
                        TextAlignment="Center"
                        HorizontalAlignment="Center" />
       </StackPanel>
@@ -29,7 +31,7 @@
         <Image Source="{StaticResource CsFile}"
                Width="64"
                Height="64" />
-        <TextBlock Text="New Script&#xA;(Ctrl+Shift+N)"
+        <TextBlock Text="{OnPlatform New Script&#xA;(Ctrl+Shift+N), macOS=New Script&#xA;(⌘ ⇧ N)}"
                    TextAlignment="Center"
                    HorizontalAlignment="Center" />
       </StackPanel>

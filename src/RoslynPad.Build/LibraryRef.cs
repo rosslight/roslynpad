@@ -1,13 +1,11 @@
-﻿using System;
-
-namespace RoslynPad.Build;
+﻿namespace RoslynPad.Build;
 
 internal record LibraryRef(LibraryRef.RefKind Kind, string Value, string Version) : IComparable<LibraryRef>
 {
     public static LibraryRef Reference(string path) => new(RefKind.Reference, path, string.Empty);
     public static LibraryRef FrameworkReference(string id) => new(RefKind.FrameworkReference, id.ToLowerInvariant(), string.Empty);
     public static LibraryRef PackageReference(string id, string versionRange) => new(RefKind.PackageReference, id.ToLowerInvariant(), versionRange);
-    
+
     public int CompareTo(LibraryRef? other)
     {
         if (other == null) return 1;

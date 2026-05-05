@@ -1,9 +1,6 @@
 ﻿// Copyright (c) Microsoft.  All Rights Reserved.  Licensed under the Apache License, Version 2.0.  See License.txt in the project root for license information.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Glyph = RoslynPad.Roslyn.Completion.Glyph;
 
@@ -18,7 +15,7 @@ internal enum InterfaceDestination
 internal class ExtractInterfaceDialogViewModel : NotificationObject
 {
     private readonly object _syntaxFactsService;
-    private readonly List<string> _conflictingTypeNames;
+    private readonly ImmutableArray<string> _conflictingTypeNames;
     private readonly string _defaultNamespace;
     private readonly string _generatedNameTypeParameterSuffix;
     private readonly string _languageName;
@@ -27,23 +24,22 @@ internal class ExtractInterfaceDialogViewModel : NotificationObject
     internal ExtractInterfaceDialogViewModel(
         object syntaxFactsService,
         string defaultInterfaceName,
-        List<ISymbol> extractableMembers,
-        List<string> conflictingTypeNames,
+        ImmutableArray<ISymbol> extractableMembers,
+        ImmutableArray<string> conflictingTypeNames,
         string defaultNamespace,
         string generatedNameTypeParameterSuffix,
-        string languageName,
-        string fileExtension)
+        string languageName)
     {
         _syntaxFactsService = syntaxFactsService;
         _interfaceName = defaultInterfaceName;
         _conflictingTypeNames = conflictingTypeNames;
-        _fileExtension = fileExtension;
-        _fileName = $"{defaultInterfaceName}{fileExtension}";
+        _fileExtension = ".cs";
+        _fileName = $"{defaultInterfaceName}{_fileExtension}";
         _defaultNamespace = defaultNamespace;
         _generatedNameTypeParameterSuffix = generatedNameTypeParameterSuffix;
         _languageName = languageName;
 
-        MemberContainers = extractableMembers.Select(m => new MemberSymbolViewModel(m)).OrderBy(s => s.MemberName).ToList();
+        MemberContainers = [.. extractableMembers.Select(m => new MemberSymbolViewModel(m)).OrderBy(s => s.MemberName)];
     }
 
     internal bool TrySubmit()
@@ -128,7 +124,7 @@ internal class ExtractInterfaceDialogViewModel : NotificationObject
         $"{(string.IsNullOrEmpty(_defaultNamespace) ? string.Empty : _defaultNamespace + ".")}{_interfaceName.Trim()}{_generatedNameTypeParameterSuffix}"
         ;
 
-    private InterfaceDestination _destination = InterfaceDestination.NewFile;
+    private InterfaceDestination _destination = InterfaceDestination.CurrentFile;
     public InterfaceDestination Destination
     {
         get { return _destination; }
@@ -150,23 +146,16 @@ internal class ExtractInterfaceDialogViewModel : NotificationObject
         set => SetProperty(ref _fileName, value);
     }
 
-    internal class MemberSymbolViewModel : NotificationObject
+    internal class MemberSymbolViewModel(ISymbol symbol) : NotificationObject
     {
-        public ISymbol MemberSymbol { get; }
+        public ISymbol MemberSymbol { get; } = symbol;
 
         private static readonly SymbolDisplayFormat s_memberDisplayFormat = new(
             genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
             memberOptions: SymbolDisplayMemberOptions.IncludeParameters,
             parameterOptions: SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets,
             miscellaneousOptions: SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.UseSpecialTypes);
-
-        public MemberSymbolViewModel(ISymbol symbol)
-        {
-            MemberSymbol = symbol;
-            _isChecked = true;
-        }
-
-        private bool _isChecked;
+        private bool _isChecked = true;
         public bool IsChecked
         {
             get => _isChecked;

@@ -1,6 +1,3 @@
-using System.Composition;
-using System.Threading.Tasks;
-using System.Windows;
 using Microsoft.Win32;
 using RoslynPad.UI;
 
@@ -24,7 +21,7 @@ internal class OpenFileDialogAdapter : IOpenFileDialog
 
     public FileDialogFilter Filter
     {
-        set => _dialog.Filter = value + string.Empty;
+        set => _dialog.Filter = value is null ? string.Empty : $"{value.Header}|{string.Join(";", value.Extensions.Select(e => "*." + e))}";
     }
 
     public string InitialDirectory

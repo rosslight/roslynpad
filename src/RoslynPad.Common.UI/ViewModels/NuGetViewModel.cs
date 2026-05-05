@@ -1,11 +1,6 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
+﻿using System.Collections.Concurrent;
 using System.Composition;
-using System.Linq;
 using System.Runtime.ExceptionServices;
-using System.Threading;
-using System.Threading.Tasks;
 using NuGet.Common;
 using NuGet.Configuration;
 using NuGet.Credentials;
@@ -83,10 +78,15 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
     {
         _initializationException?.Throw();
 
+        if (_sourceRepositoryProvider is null)
+        {
+            return [];
+        }
+
         var filter = new SearchFilter(includePrerelease);
         var packages = new List<PackageData>();
 
-        foreach (var sourceRepository in _sourceRepositoryProvider!.GetRepositories())
+        foreach (var sourceRepository in _sourceRepositoryProvider.GetRepositories())
         {
             IPackageSearchMetadata[]? result;
             try
@@ -102,7 +102,7 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
             {
                 var match = result.FirstOrDefault(c => string.Equals(c.Identity.Id, searchTerm,
                     StringComparison.OrdinalIgnoreCase));
-                result = match != null ? new[] { match } : null;
+                result = match != null ? [match] : null;
             }
 
             if (result?.Length > 0)
@@ -130,15 +130,14 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
         private readonly List<SourceRepository> _repositories;
 
         // There should only be one instance of the source repository for each package source.
-        private static readonly ConcurrentDictionary<PackageSource, SourceRepository> _cachedSources
+        private static readonly ConcurrentDictionary<PackageSource, SourceRepository> s_cachedSources
             = new();
 
         public CommandLineSourceRepositoryProvider(IPackageSourceProvider packageSourceProvider)
         {
             PackageSourceProvider = packageSourceProvider;
 
-            _resourceProviders = new List<Lazy<INuGetResourceProvider>>();
-            _resourceProviders.AddRange(Repository.Provider.GetCoreV3());
+            _resourceProviders = [.. Repository.Provider.GetCoreV3()];
 
             // Create repositories
             _repositories = PackageSourceProvider.LoadPackageSources()
@@ -154,12 +153,12 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
 
         public SourceRepository CreateRepository(PackageSource source)
         {
-            return _cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders));
+            return s_cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders));
         }
 
         public SourceRepository CreateRepository(PackageSource source, FeedType type)
         {
-            return _cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders, type));
+            return s_cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders, type));
         }
 
         public IPackageSourceProvider PackageSourceProvider { get; }

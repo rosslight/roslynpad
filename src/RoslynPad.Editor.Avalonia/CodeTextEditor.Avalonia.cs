@@ -1,7 +1,4 @@
-﻿using Avalonia;
-using Avalonia.Controls;
-using AvaloniaEdit;
-using System;
+﻿using AvaloniaEdit.Search;
 
 namespace RoslynPad.Editor;
 
@@ -9,10 +6,23 @@ public partial class CodeTextEditor
 {
     protected override Type StyleKeyOverride => typeof(TextEditor);
 
+    private SearchPanel? _searchReplacePanel;
+
     partial void Initialize()
     {
         PointerHover += OnMouseHover;
-        PointerHoverStopped += OnMouseHoverStopped;
+        PointerExited += OnPointerExited;
+        KeyDownEvent.AddClassHandler<CodeTextEditor>(OnPreviewKeyDown, RoutingStrategies.Tunnel);
+
+        _searchReplacePanel = SearchPanel.Install(this);
+    }
+
+    public SearchPanel SearchReplacePanel => _searchReplacePanel!;
+
+    private void OnPointerExited(object? sender, PointerEventArgs e)
+    {
+        ToolTip.SetTip(this, null);
+        _toolTip = null;
     }
 
     partial void InitializeToolTip()
@@ -24,26 +34,10 @@ public partial class CodeTextEditor
 
         ToolTip.SetShowDelay(this, 0);
         ToolTip.SetTip(this, _toolTip);
-        _toolTip.GetPropertyChangedObservable(ToolTip.IsOpenProperty).Subscribe(c =>
-        {
-            if (c.NewValue as bool? != true)
-            {
-                _toolTip = null;
-            }
-        });
     }
 
     partial void AfterToolTipOpen()
     {
         _toolTip?.InvalidateVisual();
-    }
-
-    partial class CustomCompletionWindow
-    {
-        partial void Initialize()
-        {
-            CompletionList.ListBox.BorderThickness = new Thickness(1);
-            CompletionList.ListBox.PointerPressed += (o, e) => _isSoftSelectionActive = false;
-        }
     }
 }

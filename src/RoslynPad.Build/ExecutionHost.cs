@@ -1,26 +1,23 @@
-﻿using System;
-using System.Buffers;
+﻿using System.Buffers;
 using System.Buffers.Text;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
-using System.Linq;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Mono.Cecil;
+using RoslynPad.Roslyn.FileBasedPrograms;
 using Nerdbank.Streams;
 using NuGet.Versioning;
 using RoslynPad.Build.ILDecompiler;
@@ -31,8 +28,10 @@ namespace RoslynPad.Build;
 /// <summary>
 /// An <see cref="IExecutionHost"/> implementation that compiles to disk and executes in separated processes.
 /// </summary>
-internal partial class ExecutionHost : IExecutionHost
+internal partial class ExecutionHost : IExecutionHost, IDisposable
 {
+    private static readonly string s_version = typeof(ExecutionContext).Assembly.GetName().Version?.ToString() ?? string.Empty;
+
     private static readonly JsonSerializerOptions s_serializerOptions = new()
     {
         Converters =
@@ -43,13 +42,13 @@ internal partial class ExecutionHost : IExecutionHost
         NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
-    private static readonly ImmutableArray<string> s_binFilesToRename = ImmutableArray.Create(
+    private static readonly ImmutableArray<string> s_binFilesToRename = [
         "{0}.deps.json",
         "{0}.runtimeconfig.json",
         "{0}.exe.config"
-    );
+    ];
 
-    private static readonly ImmutableArray<byte> s_newLine = Encoding.UTF8.GetBytes(Environment.NewLine).ToImmutableArray();
+    private static readonly ImmutableArray<byte> s_newLine = [.. Encoding.UTF8.GetBytes(Environment.NewLine)];
 
     private readonly ExecutionHostParameters _parameters;
     private readonly IRoslynHost _roslynHost;
@@ -64,16 +63,19 @@ internal partial class ExecutionHost : IExecutionHost
     private readonly SyntaxTree _importsSyntax;
     private readonly LibraryRef _runtimeAssemblyLibraryRef;
     private readonly LibraryRef _runtimeNetFxAssemblyLibraryRef;
-    private readonly string _restorePath;
+    private readonly string _restoreCachePath;
     private readonly object _ctsLock;
     private CancellationTokenSource? _executeCts;
     private Task? _restoreTask;
     private CancellationTokenSource? _restoreCts;
     private ExecutionPlatform? _platform;
+    private string? _restorePath;
     private string? _assemblyPath;
     private string _name;
     private bool _running;
     private bool _initializeBuildPathAfterRun;
+    private bool _hasFileBasedDirectives;
+    private bool _hasLegacyPackageDirectives;
     private TextWriter? _processInputStream;
     private string? _dotNetExecutable;
 
@@ -87,7 +89,34 @@ internal partial class ExecutionHost : IExecutionHost
         }
     }
 
+    private bool IsScript => _parameters.SourceCodeKind == SourceCodeKind.Script;
+
     public bool UseCache => Platform.FrameworkVersion?.Major >= 6;
+
+    /// <summary>
+    /// Returns true if the current platform supports .NET file-based apps (dotnet run file.cs)
+    /// and the code contains file-based directives (#:package or #:sdk).
+    /// </summary>
+    private bool UseFileBasedExecution
+    {
+        get
+        {
+            if (!Platform.SupportsFileBasedApps)
+            {
+                return false;
+            }
+
+            lock (_libraries)
+            {
+                // Check if any file-based package references exist (parsed from #:package)
+                // We detect this by checking if we have package references but no #r nuget: directives
+                // Actually, we need to track this separately since both parse to PackageReference
+                return _hasFileBasedDirectives;
+            }
+        }
+    }
+
+    public bool UseFileBasedReferences => Platform.SupportsFileBasedApps && !_hasLegacyPackageDirectives;
 
     public bool HasPlatform => _platform != null;
 
@@ -118,8 +147,8 @@ internal partial class ExecutionHost : IExecutionHost
 
     private string ExecutableExtension => Platform.IsDotNet ? "dll" : "exe";
 
-    public ImmutableArray<MetadataReference> MetadataReferences { get; private set; }
-    public ImmutableArray<AnalyzerFileReference> Analyzers { get; private set; }
+    public ImmutableArray<MetadataReference> MetadataReferences { get; private set; } = [];
+    public ImmutableArray<AnalyzerFileReference> Analyzers { get; private set; } = [];
 
     public ExecutionHost(ExecutionHostParameters parameters, IRoslynHost roslynHost, ILogger logger)
     {
@@ -128,7 +157,7 @@ internal partial class ExecutionHost : IExecutionHost
         _roslynHost = roslynHost;
         _logger = logger;
         _analyzerAssemblyLoader = _roslynHost.GetService<IAnalyzerAssemblyLoader>();
-        _libraries = new();
+        _libraries = [];
         _imports = parameters.Imports;
 
         _ctsLock = new object();
@@ -140,12 +169,12 @@ internal partial class ExecutionHost : IExecutionHost
         _moduleInitSyntax = SyntaxFactory.ParseSyntaxTree(BuildCode.ModuleInit, regularParseOptions);
         _importsSyntax = SyntaxFactory.ParseSyntaxTree(GetGlobalUsings(), regularParseOptions);
 
-        MetadataReferences = ImmutableArray<MetadataReference>.Empty;
+        MetadataReferences = [];
 
-        _runtimeAssemblyLibraryRef = LibraryRef.Reference(Path.Combine(Path.GetDirectoryName(typeof(ExecutionHost).Assembly.Location)!, "runtimes", "net", "RoslynPad.Runtime.dll"));
-        _runtimeNetFxAssemblyLibraryRef = LibraryRef.Reference(Path.Combine(Path.GetDirectoryName(typeof(ExecutionHost).Assembly.Location)!, "runtimes", "netfx", "RoslynPad.Runtime.dll"));
+        _runtimeAssemblyLibraryRef = LibraryRef.Reference(Path.Combine(AppContext.BaseDirectory, "runtimes", "net", "RoslynPad.Runtime.dll"));
+        _runtimeNetFxAssemblyLibraryRef = LibraryRef.Reference(Path.Combine(AppContext.BaseDirectory, "runtimes", "netfx", "RoslynPad.Runtime.dll"));
 
-        _restorePath = Path.Combine(Path.GetTempPath(), "roslynpad", "restore");
+        _restoreCachePath = Path.Combine(Path.GetTempPath(), "roslynpad", "restore");
     }
 
     public event Action<IList<CompilationErrorResultObject>>? CompilationErrors;
@@ -155,11 +184,12 @@ internal partial class ExecutionHost : IExecutionHost
     public event Action? ReadInput;
     public event Action? RestoreStarted;
     public event Action<RestoreResult>? RestoreCompleted;
-    public event Action<RestoreResultObject>? RestoreMessage;
     public event Action<ProgressResultObject>? ProgressChanged;
 
     public void Dispose()
     {
+        _executeCts?.Dispose();
+        _restoreCts?.Dispose();
     }
 
     private string GetGlobalUsings() => string.Join(" ", _imports.Select(i => $"global using {i};"));
@@ -194,9 +224,9 @@ internal partial class ExecutionHost : IExecutionHost
         }
     }
 
-    public void ClearRestoreCache() => Directory.Delete(_restorePath);
+    public void ClearRestoreCache() => Directory.Delete(_restoreCachePath);
 
-    public async Task ExecuteAsync(string code, bool disassemble, OptimizationLevel? optimizationLevel)
+    public async Task ExecuteAsync(string path, bool disassemble, OptimizationLevel? optimizationLevel, CancellationToken cancellationToken)
     {
         if (!HasDotNetExecutable)
         {
@@ -204,34 +234,30 @@ internal partial class ExecutionHost : IExecutionHost
             return;
         }
 
-        _logger.LogInformation("Start ExecuteAsync");
+        _logger.StartExecuteAsync();
 
         await new NoContextYieldAwaitable();
 
         await RestoreTask.ConfigureAwait(false);
 
-        using var executeCts = CancelAndCreateNew(ref _executeCts);
+        using var executeCts = CancelAndCreateNew(ref _executeCts, cancellationToken);
+        cancellationToken = executeCts.Token;
 
-        using var _ = await _lock.DisposableWaitAsync().ConfigureAwait(false);
+        using var _ = await _lock.DisposableWaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
             _running = true;
 
-            var cancellationToken = executeCts.Token;
-
-            var script = CreateCompiler(code, optimizationLevel);
-
-            var binPath = UseCache ? BuildPath : Path.Combine(BuildPath, "bin");
+            // Traditional execution: compile first, then run
+            var binPath = IsScript ? BuildPath : Path.Combine(BuildPath, "bin");
             _assemblyPath = Path.Combine(binPath, $"{Name}.{ExecutableExtension}");
 
-            var diagnostics = script.CompileAndSaveAssembly(_assemblyPath, cancellationToken);
-            var hasErrors = diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
-            _logger.LogInformation("Assembly saved at {assemblyPath}, has errors = {hasErrors}", _assemblyPath, hasErrors);
+            var success = IsScript
+                ? CompileInProcess(path, optimizationLevel, _assemblyPath, cancellationToken)
+                : await CompileWithMsbuild(path, optimizationLevel, cancellationToken).ConfigureAwait(false);
 
-            SendDiagnostics(diagnostics);
-
-            if (hasErrors)
+            if (!success)
             {
                 return;
             }
@@ -241,7 +267,7 @@ internal partial class ExecutionHost : IExecutionHost
                 Disassemble();
             }
 
-            await RunProcessAsync(_assemblyPath, cancellationToken).ConfigureAwait(false);
+            await ExecuteAssemblyAsync(_assemblyPath, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -257,13 +283,178 @@ internal partial class ExecutionHost : IExecutionHost
         }
     }
 
+    private async Task<bool> CompileWithMsbuild(string path, OptimizationLevel? optimizationLevel, CancellationToken cancellationToken)
+    {
+        if (_restorePath is null)
+        {
+            return false;
+        }
+
+        var targetPath = Path.Combine(BuildPath, "Program.cs");
+        var code = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        var syntaxTree = ParseAndTransformCode(code, path, (CSharpParseOptions)_roslynHost.ParseOptions, cancellationToken: cancellationToken);
+        var finalCode = syntaxTree.ToString();
+        if (!File.Exists(targetPath) || !string.Equals(await File.ReadAllTextAsync(targetPath, cancellationToken).ConfigureAwait(false), finalCode, StringComparison.Ordinal))
+        {
+            await File.WriteAllTextAsync(targetPath, finalCode, cancellationToken).ConfigureAwait(false);
+        }
+
+        var csprojPath = Path.Combine(BuildPath, UseCache ? "program.csproj" : $"{Name}.csproj");
+        if (Platform.IsDotNetFramework || Platform.FrameworkVersion?.Major < 5)
+        {
+            var moduleInitAttributeFile = Path.Combine(BuildPath, BuildCode.ModuleInitAttributeFileName);
+            if (!File.Exists(moduleInitAttributeFile))
+            {
+                await File.WriteAllTextAsync(moduleInitAttributeFile, BuildCode.ModuleInitAttribute, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        var moduleInitFile = Path.Combine(BuildPath, BuildCode.ModuleInitFileName);
+        if (!File.Exists(moduleInitFile))
+        {
+            await File.WriteAllTextAsync(moduleInitFile, BuildCode.ModuleInit, cancellationToken).ConfigureAwait(false);
+        }
+
+        var buildWarningsPath = Path.Combine(BuildPath, "build-warnings.log");
+        var buildErrorsPath = Path.Combine(BuildPath, "build-errors.log");
+
+        var buildArgs =
+            $"-nologo -v:q -p:Configuration={optimizationLevel} \"-p:AssemblyName={Name}\" " +
+            $"\"-flp1:logfile={buildWarningsPath};warningsonly;Encoding=UTF-8\" \"-flp2:logfile={buildErrorsPath};errorsonly;Encoding=UTF-8\" \"{csprojPath}\" ";
+        using var buildResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, BuildPath,
+            $"build {buildArgs}", cancellationToken).ConfigureAwait(false);
+        await buildResult.GetStandardOutputLinesAsync().LastOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+
+        var compilationErrors = await ReadBuildLogAsync(buildWarningsPath, "Warning")
+            .Concat(ReadBuildLogAsync(buildErrorsPath, "Error"))
+            .ToArrayAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var success = buildResult.ExitCode == 0;
+        if (!success && compilationErrors.Length == 0)
+        {
+            var output = buildResult.StandardError;
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                output = buildResult.StandardOutput;
+            }
+            compilationErrors = [new CompilationErrorResultObject { Severity = "Error", Message = "Build failed: " + output }];
+        }
+
+        CompilationErrors?.Invoke(compilationErrors);
+
+        return success;
+    }
+
+    /// <summary>
+    /// Runs <c>dotnet project convert</c> on a minimal file containing the stored file-based
+    /// directives, then patches the resulting csproj with RoslynPad build settings.
+    /// </summary>
+    private async Task<XDocument> ConvertFileBasedToCsprojAsync(CancellationToken cancellationToken)
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "roslynpad", "convert", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var tempFile = Path.Combine(tempDir, "Program.cs");
+            var document = DocumentId is not null ? _roslynHost.GetDocument(DocumentId) : null;
+            var sourceText = document is not null ? await document.GetTextAsync(cancellationToken).ConfigureAwait(false) : null;
+            if (sourceText is null)
+            {
+                return MSBuildHelper.CreateCsproj(Platform.TargetFrameworkMoniker, _libraries, _parameters.Imports);
+            }
+            await File.WriteAllTextAsync(tempFile, sourceText.ToString(), cancellationToken).ConfigureAwait(false);
+
+            // Use a separate output directory because --output requires a non-existent directory
+            var outputDir = Path.Combine(tempDir, "out");
+
+            // Suppress Directory.Build.props/targets from parent directories
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "Directory.Build.props"), "<Project/>", cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(Path.Combine(tempDir, "Directory.Build.targets"), "<Project/>", cancellationToken).ConfigureAwait(false);
+
+            using var convertResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, tempDir,
+                $"project convert \"{tempFile}\" --output \"{outputDir}\"", cancellationToken).ConfigureAwait(false);
+            await convertResult.GetStandardOutputLinesAsync().LastOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+
+            var csprojPath = Path.Combine(outputDir, "Program.csproj");
+            if (convertResult.ExitCode != 0 || !File.Exists(csprojPath))
+            {
+                var error = convertResult.StandardError ?? convertResult.StandardOutput;
+                throw new InvalidOperationException($"dotnet project convert failed (exit code {convertResult.ExitCode}): {error}");
+            }
+
+            var csproj = XDocument.Load(csprojPath);
+
+            MSBuildHelper.PatchConvertedCsproj(csproj,
+                Platform.TargetFrameworkMoniker,
+                _runtimeAssemblyLibraryRef.Value,
+                _parameters.Imports);
+
+            return csproj;
+        }
+        finally
+        {
+            IOUtilities.PerformIO(() => Directory.Delete(tempDir, recursive: true));
+        }
+    }
+
+    private async IAsyncEnumerable<CompilationErrorResultObject> ReadBuildLogAsync(string path, string severity)
+    {
+        if (!File.Exists(path))
+        {
+            yield break;
+        }
+
+        await foreach (var line in File.ReadLinesAsync(path).ConfigureAwait(false))
+        {
+            var match = MsbuildLogRegex().Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var code = match.Groups["code"].Value;
+            if (_parameters.DisabledDiagnostics.Contains(code))
+            {
+                continue;
+            }
+
+            var error = new CompilationErrorResultObject
+            {
+                Severity = severity,
+                ErrorCode = code,
+                Message = match.Groups["message"].Value,
+            };
+
+            if (match.Groups["file"].Value.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                error.LineNumber = int.Parse(match.Groups["line"].ValueSpan, CultureInfo.InvariantCulture);
+                error.Column = int.Parse(match.Groups["column"].ValueSpan, CultureInfo.InvariantCulture);
+            }
+
+            yield return error;
+        }
+    }
+
+    private bool CompileInProcess(string path, OptimizationLevel? optimizationLevel, string assemblyPath, CancellationToken cancellationToken)
+    {
+        var code = File.ReadAllText(path);
+        var script = CreateCompiler(code, optimizationLevel, cancellationToken);
+
+        var diagnostics = script.CompileAndSaveAssembly(assemblyPath, cancellationToken);
+        var hasErrors = diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
+        _logger.AssemblySaved(_assemblyPath, hasErrors);
+
+        SendDiagnostics(diagnostics);
+        return !hasErrors;
+    }
+
     private void NoDotNetError()
     {
-        CompilationErrors?.Invoke(new[]
-        {
+        CompilationErrors?.Invoke(
+        [
             CompilationErrorResultObject.Create("Error", errorCode: "",
-                message: "The .NET SDK is required to use RoslynPad. https://aka.ms/dotnet/download", line: 0, column: 0)
-        });
+                message: ErrorMessages.MissingSdk, line: 0, column: 0)
+        ]);
     }
 
     private void Disassemble()
@@ -275,7 +466,7 @@ internal partial class ExecutionHost : IExecutionHost
         Disassembled?.Invoke(output.ToString());
     }
 
-    private Compiler CreateCompiler(string code, OptimizationLevel? optimizationLevel)
+    private Compiler CreateCompiler(string code, OptimizationLevel? optimizationLevel, CancellationToken cancellationToken)
     {
         var platform = Platform.Architecture == Architecture.X86
             ? Microsoft.CodeAnalysis.Platform.AnyCpu32BitPreferred
@@ -283,18 +474,20 @@ internal partial class ExecutionHost : IExecutionHost
 
         var optimization = optimizationLevel ?? OptimizationLevel.Release;
 
-        _logger.LogInformation("Creating script runner, platform = {platform}, " +
-            "references = {references}, imports = {imports}, directory = {directory}, " +
-            "optimization = {optimization}",
-            platform,
-            MetadataReferences.Select(t => t.Display),
-            _imports,
-            _parameters.WorkingDirectory,
-            optimizationLevel);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var referenceDisplays = MetadataReferences.Select(static reference => reference.Display).ToArray();
+            _logger.CreatingScriptRunner(
+                platform,
+                referenceDisplays,
+                _imports,
+                _parameters.WorkingDirectory,
+                optimizationLevel);
+        }
 
         var parseOptions = ((CSharpParseOptions)_roslynHost.ParseOptions).WithKind(_parameters.SourceCodeKind);
 
-        var syntaxTrees = ImmutableList.Create(ParseCode(code, parseOptions));
+        var syntaxTrees = ImmutableList.Create(ParseAndTransformCode(code, path: "", parseOptions, cancellationToken));
         if (_parameters.SourceCodeKind == SourceCodeKind.Script)
         {
             syntaxTrees = syntaxTrees.Insert(0, _scriptInitSyntax);
@@ -321,7 +514,7 @@ internal partial class ExecutionHost : IExecutionHost
             allowUnsafe: _parameters.AllowUnsafe);
     }
 
-    private async Task RunProcessAsync(string assemblyPath, CancellationToken cancellationToken)
+    private async Task ExecuteAssemblyAsync(string assemblyPath, CancellationToken cancellationToken)
     {
         using var process = new Process { StartInfo = GetProcessStartInfo(assemblyPath) };
         using var _ = cancellationToken.Register(() =>
@@ -333,14 +526,14 @@ internal partial class ExecutionHost : IExecutionHost
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error killing process");
+                _logger.ErrorKillingProcess(ex);
             }
         });
 
-        _logger.LogInformation("Starting process {executable}, arguments = {arguments}", process.StartInfo.FileName, process.StartInfo.Arguments);
+        _logger.StartingProcess(process.StartInfo.FileName, process.StartInfo.Arguments);
         if (!process.Start())
         {
-            _logger.LogWarning("Process.Start returned false");
+            _logger.ProcessStartReturnedFalse();
             return;
         }
 
@@ -377,13 +570,9 @@ internal partial class ExecutionHost : IExecutionHost
 
     private async Task ReadProcessStreamAsync(StreamReader reader)
     {
-        while (!reader.EndOfStream)
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            var line = await reader.ReadLineAsync().ConfigureAwait(false);
-            if (line != null)
-            {
-                Dumped?.Invoke(new ResultObject { Value = line });
-            }
+            Dumped?.Invoke(new ResultObject { Value = line });
         }
     }
 
@@ -464,10 +653,10 @@ internal partial class ExecutionHost : IExecutionHost
         }
     }
 
-    private static SyntaxTree ParseCode(string code, CSharpParseOptions parseOptions)
+    private static SyntaxTree ParseAndTransformCode(string code, string path, CSharpParseOptions parseOptions, CancellationToken cancellationToken)
     {
-        var tree = SyntaxFactory.ParseSyntaxTree(code, parseOptions);
-        var root = tree.GetRoot();
+        var tree = SyntaxFactory.ParseSyntaxTree(code, parseOptions, path, cancellationToken: cancellationToken);
+        var root = tree.GetRoot(cancellationToken);
 
         if (root is not CompilationUnitSyntax compilationUnit)
         {
@@ -483,6 +672,19 @@ internal partial class ExecutionHost : IExecutionHost
         }
 
         compilationUnit = compilationUnit.RemoveNodes(nodesToRemove, SyntaxRemoveOptions.KeepExteriorTrivia) ?? compilationUnit;
+
+        // Remove file-level directives (#:package, #:sdk, etc.) from leading trivia -
+        // these are resolved by dotnet project convert / msbuild, not the compiler
+        var fileLevelDirectives = tree.FindFileLevelDirectives();
+        if (fileLevelDirectives.Length > 0)
+        {
+            var leadingTrivia = compilationUnit.GetLeadingTrivia();
+            var newTrivia = leadingTrivia.Where(t =>
+                !t.IsKind(SyntaxKind.IgnoredDirectiveTrivia) &&
+                !t.IsKind(SyntaxKind.ShebangDirectiveTrivia));
+            compilationUnit = compilationUnit.WithLeadingTrivia(newTrivia);
+        }
+
         var members = compilationUnit.Members;
 
         // add .Dump() to the last bare expression
@@ -503,8 +705,7 @@ internal partial class ExecutionHost : IExecutionHost
     {
         if (diagnostics.Length > 0)
         {
-            CompilationErrors?.Invoke(diagnostics.Where(d => !_parameters.DisabledDiagnostics.Contains(d.Id))
-                .Select(GetCompilationErrorResultObject).ToImmutableArray());
+            CompilationErrors?.Invoke([.. diagnostics.Where(d => !_parameters.DisabledDiagnostics.Contains(d.Id)).Select(GetCompilationErrorResultObject)]);
         }
     }
 
@@ -513,7 +714,7 @@ internal partial class ExecutionHost : IExecutionHost
         var lineSpan = diagnostic.Location.GetLineSpan();
 
         var result = CompilationErrorResultObject.Create(diagnostic.Severity.ToString(),
-                diagnostic.Id, diagnostic.GetMessage(),
+                diagnostic.Id, diagnostic.GetMessage(CultureInfo.InvariantCulture),
                 lineSpan.StartLinePosition.Line, lineSpan.StartLinePosition.Character);
         return result;
     }
@@ -534,8 +735,9 @@ internal partial class ExecutionHost : IExecutionHost
             return;
         }
 
-        var libraries = ParseReferences(syntaxRoot).Append(Platform.IsDotNet ? _runtimeAssemblyLibraryRef : _runtimeNetFxAssemblyLibraryRef);
-        if (UpdateLibraries(libraries))
+        var (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives) = ParseReferences(syntaxRoot);
+        var allLibraries = libraries.Append(Platform.IsDotNet ? _runtimeAssemblyLibraryRef : _runtimeNetFxAssemblyLibraryRef);
+        if (UpdateLibraries(allLibraries, hasFileBasedDirectives, hasLegacyPackageDirectives))
         {
             await RestoreAsync().ConfigureAwait(false);
         }
@@ -551,14 +753,20 @@ internal partial class ExecutionHost : IExecutionHost
             return document != null ? await document.GetSyntaxRootAsync().ConfigureAwait(false) : null;
         }
 
-        bool UpdateLibraries(IEnumerable<LibraryRef> libraries)
+        bool UpdateLibraries(IEnumerable<LibraryRef> libraries, bool hasFileBased, bool hasLegacyPackage)
         {
             lock (_libraries)
             {
-                if (!_libraries.SetEquals(libraries))
+                var librariesChanged = !_libraries.SetEquals(libraries);
+                var fileBasedChanged = _hasFileBasedDirectives != hasFileBased;
+                var legacyChanged = _hasLegacyPackageDirectives != hasLegacyPackage;
+                
+                if (librariesChanged || fileBasedChanged || legacyChanged)
                 {
                     _libraries.Clear();
                     _libraries.UnionWith(libraries);
+                    _hasFileBasedDirectives = hasFileBased;
+                    _hasLegacyPackageDirectives = hasLegacyPackage;
                     return true;
                 }
                 else if (alwaysRestore)
@@ -570,18 +778,47 @@ internal partial class ExecutionHost : IExecutionHost
             return false;
         }
 
-        static List<LibraryRef> ParseReferences(SyntaxNode syntaxRoot)
+        static (List<LibraryRef> libraries, bool hasFileBasedDirectives, bool hasLegacyPackageDirectives) ParseReferences(SyntaxNode syntaxRoot)
         {
             const string LegacyNuGetPrefix = "$NuGet\\";
             const string FxPrefix = "framework:";
 
             var libraries = new List<LibraryRef>();
+            var hasFileBasedDirectives = false;
+            var hasLegacyPackageDirectives = false;
 
             if (syntaxRoot is not CompilationUnitSyntax compilation)
             {
-                return libraries;
+                return (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives);
             }
 
+            // Parse file-level directives (#:package, #:framework) using syntax tree
+            foreach (var directive in syntaxRoot.SyntaxTree.FindFileLevelDirectives())
+            {
+                switch (directive.DirectiveKind)
+                {
+                    case "package":
+                        var (id, version) = ReferenceDirectiveHelper.ParseFileBasedPackageDirective(directive.DirectiveText);
+                        if (!string.IsNullOrEmpty(id))
+                        {
+                            libraries.Add(LibraryRef.PackageReference(id, version ?? string.Empty));
+                            hasFileBasedDirectives = true;
+                        }
+                        break;
+                    case "framework":
+                        if (!string.IsNullOrEmpty(directive.DirectiveText))
+                        {
+                            libraries.Add(LibraryRef.FrameworkReference(directive.DirectiveText));
+                            hasFileBasedDirectives = true;
+                        }
+                        break;
+                    case "sdk":
+                        hasFileBasedDirectives = true;
+                        break;
+                }
+            }
+
+            // Parse traditional #r directives
             foreach (var directive in compilation.GetReferenceDirectives())
             {
                 var value = directive.File.ValueText;
@@ -597,10 +834,12 @@ internal partial class ExecutionHost : IExecutionHost
                 if (HasPrefix(ReferenceDirectiveHelper.NuGetPrefix, value))
                 {
                     (id, version) = ReferenceDirectiveHelper.ParseNuGetReference(value);
+                    hasLegacyPackageDirectives = true;
                 }
                 else if (HasPrefix(LegacyNuGetPrefix, value))
                 {
                     (id, version) = ParseLegacyNuGetReference(value);
+                    hasLegacyPackageDirectives = true;
                     if (id == null)
                     {
                         continue;
@@ -621,7 +860,7 @@ internal partial class ExecutionHost : IExecutionHost
                 libraries.Add(LibraryRef.PackageReference(id, version ?? string.Empty));
             }
 
-            return libraries;
+            return (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives);
 
             static bool HasPrefix(string prefix, string value) =>
                 value.Length > prefix.Length &&
@@ -639,19 +878,20 @@ internal partial class ExecutionHost : IExecutionHost
 
     public DocumentId? DocumentId { get; set; }
 
-    private async Task RestoreAsync()
+    private async Task RestoreAsync(CancellationToken cancellationToken = default)
     {
         if (!HasPlatform || string.IsNullOrEmpty(Name))
         {
             return;
         }
 
-        var restoreCts = CancelAndCreateNew(ref _restoreCts);
+        var restoreCts = CancelAndCreateNew(ref _restoreCts, cancellationToken);
+        cancellationToken = restoreCts.Token;
 
         RestoreStarted?.Invoke();
 
-        var lockDisposer = await _lock.DisposableWaitAsync().ConfigureAwait(false);
-        _restoreTask = DoRestoreAsync(RestoreTask, restoreCts.Token);
+        var lockDisposer = await _lock.DisposableWaitAsync(cancellationToken).ConfigureAwait(false);
+        _restoreTask = DoRestoreAsync(RestoreTask, cancellationToken);
 
         async Task DoRestoreAsync(Task previousTask, CancellationToken cancellationToken)
         {
@@ -669,70 +909,85 @@ internal partial class ExecutionHost : IExecutionHost
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error in previous restore task");
+                    _logger.ErrorInPreviousRestoreTask(ex);
                 }
 
                 var projBuildResult = await BuildCsproj().ConfigureAwait(false);
 
-                if (!projBuildResult.markerExists)
-                {
-                    await BuildGlobalJson(projBuildResult.restorePath).ConfigureAwait(false);
-                    File.Copy(_parameters.NuGetConfigPath, Path.Combine(projBuildResult.restorePath, "nuget.config"), overwrite: true);
+                var outputPath = Path.Combine(projBuildResult.RestorePath, "output.json");
 
-                    var errorsPath = Path.Combine(projBuildResult.restorePath, "errors.log");
-                    File.Delete(errorsPath);
+                if (!projBuildResult.MarkerExists)
+                {
+                    File.WriteAllText(Path.Combine(projBuildResult.RestorePath, "Program.cs"), "_ = 0;");
+                    await BuildGlobalJson(projBuildResult.RestorePath).ConfigureAwait(false);
+                    File.Copy(_parameters.NuGetConfigPath, Path.Combine(projBuildResult.RestorePath, "nuget.config"), overwrite: true);
+
+                    var restoreErrorsPath = Path.Combine(projBuildResult.RestorePath, "restore-errors.log");
+                    File.Delete(restoreErrorsPath);
 
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    var buildArgs = $" --interactive -nologo -flp:errorsonly;logfile=\"{errorsPath}\" \"{projBuildResult.csprojPath}\"";
-                    using var restoreResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, BuildPath, $"build {buildArgs}", cancellationToken).ConfigureAwait(false);
+                    var buildArgs =
+                        $"--interactive -nologo " +
+                        $"-flp:errorsonly;logfile=\"{restoreErrorsPath}\";Encoding=UTF-8 \"{projBuildResult.CsprojPath}\" " +
+                        $"-getTargetResult:build -getItem:ReferencePathWithRefAssemblies,Analyzer ";
+                    using var restoreResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, BuildPath,
+                        $"build {buildArgs}", cancellationToken).ConfigureAwait(false);
 
-                    await foreach (var line in restoreResult.GetStandardOutputLinesAsync().ConfigureAwait(false))
-                    {
-                        var trimmed = line.Trim();
-                        var deviceCode = GetDeviceCode(trimmed);
-                        if (deviceCode != null)
-                        {
-                            RestoreMessage?.Invoke(new RestoreResultObject(trimmed, "Warning", deviceCode));
-                        }
-                    }
+                    await restoreResult.GetStandardOutputLinesAsync().LastOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
                     if (restoreResult.ExitCode != 0)
                     {
-                        var errors = await GetErrorsAsync(errorsPath, restoreResult, cancellationToken).ConfigureAwait(false);
+                        var errors = await GetRestoreErrorsAsync(restoreErrorsPath, restoreResult, cancellationToken).ConfigureAwait(false);
                         RestoreCompleted?.Invoke(RestoreResult.FromErrors(errors));
                         return;
                     }
 
-                    if (projBuildResult.markerPath is not null)
+                    var restoreOutput = JsonSerializer.Deserialize<BuildOutput>(restoreResult.StandardOutput);
+                    using var resultOutputStream = File.OpenWrite(outputPath);
+                    await JsonSerializer.SerializeAsync(resultOutputStream, restoreOutput, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                    if (projBuildResult.UsesCache)
                     {
-                        await File.WriteAllTextAsync(projBuildResult.markerPath, string.Empty, cancellationToken).ConfigureAwait(false);
+                        await File.WriteAllTextAsync(projBuildResult.MarkerPath, string.Empty, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
-                if (projBuildResult.markerPath is not null)
+                if (projBuildResult.UsesCache)
                 {
-                    IOUtilities.DirectoryCopy(Path.Combine(projBuildResult.restorePath, "bin"), BuildPath, overwrite: true);
-                    await File.WriteAllTextAsync(Path.Combine(BuildPath, Path.GetFileName(projBuildResult.restorePath)), string.Empty, cancellationToken).ConfigureAwait(false);
-
-                    foreach (var fileToRename in s_binFilesToRename)
+                    if (IsScript)
                     {
-                        var originalFile = Path.Combine(BuildPath, string.Format(fileToRename, "restore"));
-                        var newFile = Path.Combine(BuildPath, string.Format(fileToRename, Name));
-                        if (File.Exists(originalFile))
+                        IOUtilities.DirectoryCopy(Path.Combine(projBuildResult.RestorePath, "bin"), BuildPath, overwrite: true);
+                    }
+                    else
+                    {
+                        IOUtilities.DirectoryCopy(Path.Combine(projBuildResult.RestorePath), BuildPath, overwrite: true, recursive: false);
+                        File.Delete(Path.Combine(BuildPath, "Program.cs"));
+                    }
+
+                    await File.WriteAllTextAsync(Path.Combine(BuildPath, Path.GetFileName(projBuildResult.RestorePath)), string.Empty, cancellationToken).ConfigureAwait(false);
+
+                    if (IsScript)
+                    {
+                        foreach (var fileToRename in s_binFilesToRename)
                         {
-                            File.Move(originalFile, newFile, overwrite: true);
+                            var originalFile = Path.Combine(BuildPath, string.Format(CultureInfo.InvariantCulture, fileToRename, "program"));
+                            var newFile = Path.Combine(BuildPath, string.Format(CultureInfo.InvariantCulture, fileToRename, Name));
+                            if (File.Exists(originalFile))
+                            {
+                                File.Move(originalFile, newFile, overwrite: true);
+                            }
                         }
                     }
                 }
 
-                await ReadReferencesAsync(projBuildResult.restorePath, cancellationToken).ConfigureAwait(false);
+                await ReadReferencesAsync(outputPath, cancellationToken).ConfigureAwait(false);
                 RestoreCompleted?.Invoke(RestoreResult.SuccessResult);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Restore error");
-                RestoreCompleted?.Invoke(RestoreResult.FromErrors(new[] { ex.ToString() }));
+                _logger.RestoreError(ex);
+                RestoreCompleted?.Invoke(RestoreResult.FromErrors([ex.ToString()]));
             }
             finally
             {
@@ -740,33 +995,24 @@ internal partial class ExecutionHost : IExecutionHost
             }
         }
 
-        static string? GetDeviceCode(string line)
+        async Task ReadReferencesAsync(string path, CancellationToken cancellationToken)
         {
-            if (!line.Contains("devicelogin", StringComparison.OrdinalIgnoreCase))
+            using var stream = File.OpenRead(path);
+            var output = await JsonSerializer.DeserializeAsync<BuildOutput>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (output is null)
             {
-                return null;
+                return;
             }
 
-            var match = DeviceCodeMatcher().Match(line);
-            return match.Success ? match.Value : null;
-        }
-
-        async Task ReadReferencesAsync(string restorePath, CancellationToken cancellationToken)
-        {
-            var references = await ReadPathsFile(restorePath, MSBuildHelper.ReferencesFile, cancellationToken).ConfigureAwait(false);
-            var analyzers = await ReadPathsFile(restorePath, MSBuildHelper.AnalyzersFile, cancellationToken).ConfigureAwait(false);
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            MetadataReferences = references
+            MetadataReferences = [.. output.Items.ReferencePathWithRefAssemblies
+                .Select(r => r.FullPath)
                 .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Select(_roslynHost.CreateMetadataReference)
-                .ToImmutableArray();
+                .Select(_roslynHost.CreateMetadataReference)];
 
-            Analyzers = analyzers
+            Analyzers = [.. output.Items.Analyzer
+                .Select(r => r.FullPath)
                 .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Select(r => new AnalyzerFileReference(r, _analyzerAssemblyLoader))
-                .ToImmutableArray();
+                .Select(r => new AnalyzerFileReference(r, _analyzerAssemblyLoader))];
         }
 
         async Task BuildGlobalJson(string restorePath)
@@ -777,48 +1023,50 @@ internal partial class ExecutionHost : IExecutionHost
             }
 
             var globalJson = $@"{{ ""sdk"": {{ ""version"": ""{Platform.FrameworkVersion}"" }} }}";
-            await File.WriteAllTextAsync(Path.Combine(restorePath, "global.json"), globalJson).ConfigureAwait(false);
+            await File.WriteAllTextAsync(Path.Combine(restorePath, "global.json"), globalJson, cancellationToken).ConfigureAwait(false);
         }
 
-        async Task<(string restorePath, string csprojPath, string? markerPath, bool markerExists)> BuildCsproj()
+        async Task<CsprojBuildResult> BuildCsproj()
         {
-            var csproj = MSBuildHelper.CreateCsproj(
-                Platform.IsDotNet,
-                Platform.TargetFrameworkMoniker,
-                _libraries);
+            var csproj = UseFileBasedExecution
+                ? await ConvertFileBasedToCsprojAsync(cancellationToken).ConfigureAwait(false)
+                : MSBuildHelper.CreateCsproj(
+                    Platform.TargetFrameworkMoniker,
+                    _libraries,
+                    _parameters.Imports);
 
-            string csprojPath, restorePath;
+            string csprojPath;
             string? markerPath;
             bool markerExists;
 
             if (UseCache)
             {
-                var hash = GetHash(csproj.ToString(System.Xml.Linq.SaveOptions.DisableFormatting), Platform.Description);
-                var hashedRestorePath = Path.Combine(_restorePath, hash);
+                var hash = GetHash(csproj.ToString(SaveOptions.DisableFormatting), Platform.Description, s_version);
+                var hashedRestorePath = Path.Combine(_restoreCachePath, hash);
                 Directory.CreateDirectory(hashedRestorePath);
 
-                csprojPath = Path.Combine(hashedRestorePath, "restore.csproj");
+                csprojPath = Path.Combine(hashedRestorePath, "program.csproj");
                 markerPath = Path.Combine(hashedRestorePath, ".restored");
-                restorePath = hashedRestorePath;
+                _restorePath = hashedRestorePath;
                 markerExists = File.Exists(markerPath);
             }
             else
             {
                 csprojPath = Path.Combine(BuildPath, $"{Name}.csproj");
                 markerPath = null;
-                restorePath = BuildPath;
+                _restorePath = BuildPath;
                 markerExists = false;
             }
 
             if (!markerExists)
             {
-                await Task.Run(() => csproj.Save(csprojPath)).ConfigureAwait(false);
+                await Task.Run(() => csproj.Save(csprojPath), cancellationToken).ConfigureAwait(false);
             }
 
-            return (restorePath, csprojPath, markerPath, markerExists);
+            return new(_restorePath, csprojPath, markerPath, markerExists);
         }
 
-        static async Task<string[]> GetErrorsAsync(string errorsPath, ProcessUtil.ProcessResult result, CancellationToken cancellationToken)
+        static async Task<string[]> GetRestoreErrorsAsync(string errorsPath, ProcessUtil.ProcessResult result, CancellationToken cancellationToken)
         {
             string[] errors;
             try
@@ -832,7 +1080,7 @@ internal partial class ExecutionHost : IExecutionHost
                 {
                     for (var i = 0; i < errors.Length; i++)
                     {
-                        var match = ErrorMatcher().Match(errors[i]);
+                        var match = RestoreErrorRegex().Match(errors[i]);
                         if (match.Success)
                         {
                             errors[i] = match.Value;
@@ -849,17 +1097,10 @@ internal partial class ExecutionHost : IExecutionHost
         }
 
         static string[] GetErrorsFromResult(ProcessUtil.ProcessResult result) =>
-            new[] { result.StandardOutput, result.StandardError! };
-
-        async Task<string[]> ReadPathsFile(string restorePath, string file, CancellationToken cancellationToken)
-        {
-            var path = Path.Combine(restorePath, file);
-            var paths = await File.ReadAllLinesAsync(path, cancellationToken).ConfigureAwait(false);
-            return paths;
-        }
+            [result.StandardError ?? string.Empty];
     }
 
-    private CancellationTokenSource CancelAndCreateNew(ref CancellationTokenSource? cts)
+    private CancellationTokenSource CancelAndCreateNew(ref CancellationTokenSource? cts, CancellationToken cancellationToken)
     {
         lock (_ctsLock)
         {
@@ -869,18 +1110,19 @@ internal partial class ExecutionHost : IExecutionHost
                 cts.Dispose();
             }
 
-            var newCts = new CancellationTokenSource();
+            var newCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts = newCts;
             return newCts;
         }
     }
 
-    private static string GetHash(string a, string b)
+    private static string GetHash(string a, string b, string c)
     {
         Span<byte> hashBuffer = stackalloc byte[32];
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(MemoryMarshal.AsBytes(a.AsSpan()));
         hash.AppendData(MemoryMarshal.AsBytes(b.AsSpan()));
+        hash.AppendData(MemoryMarshal.AsBytes(c.AsSpan()));
         hash.TryGetHashAndReset(hashBuffer, out _);
         return Convert.ToHexString(hashBuffer);
     }
@@ -896,8 +1138,18 @@ internal partial class ExecutionHost : IExecutionHost
         public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options) => throw new NotSupportedException();
     }
 
-    [GeneratedRegex("[A-Z0-9]{9,}")]
-    private static partial Regex DeviceCodeMatcher();
-    [GeneratedRegex("(?<=\\: error )[^\\]]+")]
-    private static partial Regex ErrorMatcher();
+    [GeneratedRegex(@"(?<=\: error )[^\]]+")]
+    private static partial Regex RestoreErrorRegex();
+
+    [GeneratedRegex(@"(?<file>[\\/][^\\/(]+)?\((?<line>\d+),(?<column>\d+)\): (?<severity>warning|error) (?<code>\w+): ((?<message>.+)\s*\[.+\]|(?<message>.+))", RegexOptions.ExplicitCapture)]
+    private static partial Regex MsbuildLogRegex();
+
+    private record BuildOutput(BuildOutputItems Items);
+    private record BuildOutputItems(BuildOutputReferenceItem[] ReferencePathWithRefAssemblies, BuildOutputReferenceItem[] Analyzer);
+    private record BuildOutputReferenceItem(string FullPath);
+    private record CsprojBuildResult(string RestorePath, string CsprojPath, string? MarkerPath, bool MarkerExists)
+    {
+        [MemberNotNullWhen(true, nameof(MarkerPath))]
+        public bool UsesCache => MarkerPath is not null;
+    }
 }

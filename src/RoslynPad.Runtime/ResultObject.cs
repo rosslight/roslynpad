@@ -1,39 +1,42 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Reflection;
 
 namespace RoslynPad.Runtime;
 
 internal class ResultObject
 {
-    private static readonly HashSet<string> s_irrelevantEnumerableProperties = new() { "Count", "Length", "Key" };
+    private static readonly HashSet<string> s_irrelevantEnumerableProperties = ["Count", "Length", "Key"];
 
-    private static readonly HashSet<string> s_doNotTreatAsEnumerableTypeNames = new() { "JObject", "JProperty" };
+    private static readonly HashSet<string> s_doNotTreatAsEnumerableTypeNames = ["JObject", "JProperty", "JsonObject"];
 
     private static readonly Dictionary<string, string> s_toStringAlternatives = new()
     {
         ["JArray"] = "[...]",
-        ["JObject"] = "{...}"
+        ["JObject"] = "{...}",
+        ["JsonElement"] = "{...}",
+        ["JsonDocument"] = "{...}",
+        ["JsonArray"] = "[...]",
+        ["JsonObject"] = "{...}",
     };
 
     private readonly DumpQuotas _quotas;
     private readonly MemberInfo? _member;
 
-    public static ResultObject Create(object? o, in DumpQuotas quotas, string? header = null) =>
-        new(o, quotas, header);
+    public static ResultObject Create(object? o, in DumpQuotas quotas, string? header = null, int? line = null) =>
+        new(o, quotas, header, line);
 
-    internal ResultObject(object? o, in DumpQuotas quotas, string? header = null, MemberInfo? member = null)
+    internal ResultObject(object? o, in DumpQuotas quotas, string? header = null, int? line = null, MemberInfo? member = null)
     {
         _quotas = quotas;
         _member = member;
         IsExpanded = quotas.MaxExpandedDepth > 0;
         Initialize(o, header);
+        LineNumber = line;
     }
 
     public string? Header { get; private set; }
+    public int? LineNumber { get; set; }
     public string? Value { get; protected set; }
     public string? Type { get; private set; }
     public List<ResultObject>? Children { get; private set; }
@@ -90,7 +93,7 @@ internal class ResultObject
                     PopulateChildren(o, targetQuotas, members, headerPrefix);
                     var enumerable = new ResultObject(o, targetQuotas, headerPrefix);
                     enumerable.InitializeEnumerable(headerPrefix, e, targetQuotas);
-                    Children = (Children ?? Enumerable.Empty<ResultObject>()).Concat(new[] { enumerable }).ToList();
+                    Children = (Children ?? Enumerable.Empty<ResultObject>()).Concat([enumerable]).ToList();
                 }
                 else
                 {
@@ -141,7 +144,7 @@ internal class ResultObject
 
                     if (_member.Name == "TargetSite")
                     {
-                        targetQuotas = targetQuotas.WithMaxDepth(0);
+                        targetQuotas = targetQuotas with { MaxDepth = 0 };
                     }
                 }
             }
@@ -154,7 +157,7 @@ internal class ResultObject
         {
             Header = _member.Name;
             Value = $"Threw {exception.InnerException!.GetType().Name}";
-            Children = new List<ResultObject> { ExceptionResultObject.Create(exception.InnerException, _quotas) };
+            Children = [ExceptionResultObject.Create(exception.InnerException, _quotas)];
             return true;
         }
 
@@ -288,7 +291,7 @@ internal class ResultObject
         {
             Header = _member?.Name;
             Value = $"Threw {exception.GetType().Name}";
-            Children = new List<ResultObject> { ExceptionResultObject.Create(exception, _quotas) };
+            Children = [ExceptionResultObject.Create(exception, _quotas)];
         }
     }
 
@@ -314,10 +317,7 @@ internal class ResultObject
                 while (index < _quotas.MaxEnumerableLength && enumerator.MoveNext())
                 {
                     var item = new ResultObject(enumerator.Current, targetQuotas, $"[{index}]");
-                    if (item.Type == null)
-                    {
-                        item.Type = enumerableTypeName;
-                    }
+                    item.Type ??= enumerableTypeName;
                     items.Add(item);
                     ++index;
                 }
@@ -336,7 +336,7 @@ internal class ResultObject
         {
             Header = _member?.Name;
             Value = $"Threw {exception.GetType().Name}";
-            Children = new List<ResultObject> { ExceptionResultObject.Create(exception, _quotas) };
+            Children = [ExceptionResultObject.Create(exception, _quotas)];
         }
     }
 
@@ -372,7 +372,7 @@ internal class ExceptionResultObject : ResultObject
     {
         Message = exception.Message;
 
-        var stackFrames = new StackTrace(exception, fNeedFileInfo: true).GetFrames() ?? Array.Empty<StackFrame>();
+        var stackFrames = new StackTrace(exception, fNeedFileInfo: true).GetFrames() ?? [];
         foreach (var stackFrame in stackFrames)
         {
             if (string.IsNullOrWhiteSpace(stackFrame.GetFileName()) &&
@@ -386,7 +386,6 @@ internal class ExceptionResultObject : ResultObject
 
     public static ExceptionResultObject Create(Exception exception, DumpQuotas? quotas = null) => new(exception, quotas ?? DumpQuotas.Default);
 
-    public int LineNumber { get; private set; }
     public string Message { get; private set; }
 }
 

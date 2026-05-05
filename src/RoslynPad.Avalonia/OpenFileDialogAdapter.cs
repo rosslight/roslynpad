@@ -1,7 +1,3 @@
-using System.Collections.Generic;
-using System.Composition;
-using System.Linq;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Platform.Storage;
@@ -37,10 +33,10 @@ internal class OpenFileDialogAdapter : IOpenFileDialog
 
         if (Filter != null)
         {
-            options.FileTypeFilter = new[]
-            {
-                new FilePickerFileType(Filter.Header) { Patterns = Filter.Extensions.AsReadOnly() }
-            };
+            options.FileTypeFilter =
+            [
+                new FilePickerFileType(Filter.Header) { Patterns = Filter.Extensions }
+            ];
         }
 
         var files = await window.StorageProvider.OpenFilePickerAsync(options).ConfigureAwait(false);

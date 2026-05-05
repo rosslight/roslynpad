@@ -1,26 +1,44 @@
-﻿using System;
-using System.Collections.Specialized;
+﻿using System.Collections.Specialized;
 using System.Composition.Hosting;
-using System.Linq;
+using System.Globalization;
 using System.Reflection;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Styling;
 using Dock.Model.Avalonia.Controls;
+using Dock.Model.Core.Events;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RoslynPad.Editor;
+using RoslynPad.Roslyn.Classification;
+using RoslynPad.Themes;
 using RoslynPad.UI;
+using SourceCodeKind = Microsoft.CodeAnalysis.SourceCodeKind;
 
 namespace RoslynPad;
 
 partial class MainWindow : Window
 {
-    private readonly MainViewModelBase _viewModel;
+    public const string DialogHostIdentifier = "Main";
+
+    private readonly MainViewModel _viewModel;
+    private ThemeDictionary? _themeDictionary;
+    private bool _isClosing;
+    private bool _isClosed;
+
+    public MainViewModel ViewModel => _viewModel;
 
     public MainWindow()
     {
         var services = new ServiceCollection();
-        services.AddLogging(l => l.AddSimpleConsole().AddDebug());
+        services.AddLogging(
+#if DEBUG    
+        l => l.AddDebug()
+#endif
+        );
 
         var container = new ContainerConfiguration()
             .WithProvider(new ServiceCollectionExportDescriptorProvider(services))
@@ -28,29 +46,114 @@ partial class MainWindow : Window
             .WithAssembly(Assembly.GetEntryAssembly());
         var locator = container.CreateContainer().GetExport<IServiceProvider>();
 
-        _viewModel = locator.GetRequiredService<MainViewModelBase>();
+        _viewModel = locator.GetRequiredService<MainViewModel>();
         _viewModel.OpenDocuments.CollectionChanged += OpenDocuments_CollectionChanged;
+        _viewModel.ThemeChanged += OnViewModelThemeChanged;
+        _viewModel.InitializeTheme();
 
         DataContext = _viewModel;
 
         InitializeComponent();
+        InitializeKeyBindings();
+        LoadWindowLayout();
+
+        ResultPane.GetObservable(global::Dock.Model.Avalonia.Core.DockBase.ActiveDockableProperty)
+            .Subscribe(_ => SetShowIL());
 
         if (_viewModel.Settings.WindowFontSize.HasValue)
         {
             FontSize = _viewModel.Settings.WindowFontSize.Value;
         }
+    }
 
-        if (DocumentsPane.Factory is { } factory)
+    private void InitializeKeyBindings()
+    {
+        this.AddKeyBinding(KeyBindingCommands.NewDocument, _viewModel.NewDocumentCommand, SourceCodeKind.Regular);
+        this.AddKeyBinding(KeyBindingCommands.NewScript, _viewModel.NewDocumentCommand, SourceCodeKind.Script);
+        this.AddKeyBinding(KeyBindingCommands.OpenFile, _viewModel.OpenFileCommand);
+        this.AddKeyBinding(KeyBindingCommands.CloseCurrentFile, _viewModel.CloseCurrentDocumentCommand);
+        this.AddKeyBinding(KeyBindingCommands.ToggleOptimization, _viewModel.ToggleOptimizationCommand);
+    }
+
+    private void OnErrorButtonClick(object sender, RoutedEventArgs e)
+    {
+        new Window
         {
-            factory.DockableClosed += Factory_DockableClosedAsync;
+            Title = "Error Details",
+            Width = 600,
+            Height = 400,
+            Content = new TextBox
+            {
+                Text = _viewModel.LastError?.ToString(),
+                IsReadOnly = true,
+                AcceptsReturn = true
+            }
+        }.ShowDialog(this);
+    }
+
+    private void OnActiveDockableChanged(object sender, ActiveDockableChangedEventArgs e)
+    {
+        if (e.Dockable is Document document && document.DataContext is IDocumentContent content)
+        {
+            ViewModel.ActiveContent = content;
+        }
+
+        SetShowIL();
+    }
+
+    private void SetShowIL()
+    {
+        if (_viewModel.CurrentOpenDocument is not { } currentDocument) return;
+        currentDocument.ShowIL = ResultPane.ActiveDockable == IL;
+    }
+
+    private void OnViewModelThemeChanged(object? sender, EventArgs e)
+    {
+        if (Application.Current is not { } app)
+        {
+            return;
+        }
+
+        if (!ViewModel.UseSystemTheme)
+        {
+            app.RequestedThemeVariant = ViewModel.ThemeType switch
+            {
+                ThemeType.Light => ThemeVariant.Light,
+                ThemeType.Dark => ThemeVariant.Dark,
+                _ => null
+            };
+        }
+
+        if (_themeDictionary is not null)
+        {
+            app.Resources.MergedDictionaries.Remove(_themeDictionary);
+        }
+
+        _themeDictionary = new ThemeDictionary(_viewModel.Theme);
+        app.Resources.MergedDictionaries.Add(_themeDictionary);
+
+        UpdateTaggedTextResources(app, _viewModel.Theme);
+    }
+
+    private static void UpdateTaggedTextResources(Application app, Theme theme)
+    {
+        var colors = new ThemeClassificationColors(theme);
+        foreach (var tag in TaggedTextResources.AllTags)
+        {
+            var classificationName = TaggedTextExtensions.ToClassificationTypeName(tag);
+            var brush = colors.GetBrush(classificationName).Foreground?.GetBrush(null);
+            if (brush is not null)
+            {
+                app.Resources[TaggedTextResources.GetResourceKey(tag)] = brush;
+            }
         }
     }
 
-    private async void Factory_DockableClosedAsync(object? sender, Dock.Model.Core.Events.DockableClosedEventArgs e)
+    private async void OnDockableClosedAsync(object? sender, DockableClosedEventArgs e)
     {
-        if (e.Dockable is Document document && document.DataContext is OpenDocumentViewModel viewModel)
+        if (e.Dockable is Document document && document.DataContext is IDocumentContent content)
         {
-            await _viewModel.CloseDocument(viewModel).ConfigureAwait(true);
+            await _viewModel.CloseTab(content).ConfigureAwait(true);
         }
     }
 
@@ -63,25 +166,30 @@ partial class MainWindow : Window
 
         if (e.OldItems is not null)
         {
-            foreach (var item in e.OldItems.OfType<OpenDocumentViewModel>())
+            foreach (var item in e.OldItems.OfType<IDocumentContent>())
             {
                 if (factory.FindDockable(DocumentsPane, d => d.Id == item.Id) is { } dockable)
                 {
                     factory.RemoveDockable(dockable, collapse: false);
                 }
-                
             }
         }
         if (e.NewItems is not null)
         {
-            foreach (var item in e.NewItems.OfType<OpenDocumentViewModel>())
+            foreach (var item in e.NewItems.OfType<IDocumentContent>())
             {
+                var content = item is SettingsViewModel
+                    ? (object)new SettingsView { DataContext = item }
+                    : item is SecretsViewModel
+                    ? new SecretsView { DataContext = item }
+                    : DocumentsPane.DocumentTemplate?.Content;
+
                 var document = new Document
                 {
                     Id = item.Id,
                     Title = item.Title,
                     DataContext = item,
-                    Content = DocumentsPane.DocumentTemplate?.Content
+                    Content = content
                 };
 
                 factory.AddDockable(DocumentsPane, document);
@@ -94,7 +202,152 @@ partial class MainWindow : Window
     protected override async void OnApplyTemplate(TemplateAppliedEventArgs e)
     {
         base.OnApplyTemplate(e);
-        
+
         await _viewModel.Initialize().ConfigureAwait(true);
+    }
+
+    private void SaveWindowLayout()
+    {
+        var position = Position;
+        var size = ClientSize;
+        var bounds = new Rect(position.X, position.Y, size.Width, size.Height);
+        _viewModel.Settings.WindowBounds = FormattableString.Invariant($"{bounds.X},{bounds.Y},{bounds.Width},{bounds.Height}");
+        _viewModel.Settings.WindowState = WindowState.ToString();
+    }
+
+    private void LoadWindowLayout()
+    {
+        var boundsString = _viewModel.Settings.WindowBounds;
+
+        if (!string.IsNullOrEmpty(boundsString))
+        {
+            var parts = boundsString.Split(',').Select(p => double.TryParse(p, CultureInfo.InvariantCulture, out var result) ? result : double.NaN).Where(d => !double.IsNaN(d)).ToArray();
+            if (parts.Length == 4)
+            {
+                Position = new PixelPoint((int)parts[0], (int)parts[1]);
+                Width = parts[2];
+                Height = parts[3];
+            }
+        }
+
+        if (Enum.TryParse(_viewModel.Settings.WindowState, out WindowState state) &&
+            state != WindowState.Minimized)
+        {
+            WindowState = state;
+        }
+    }
+
+    protected override async void OnClosing(Avalonia.Controls.WindowClosingEventArgs e)
+    {
+        base.OnClosing(e);
+
+        if (!_isClosing)
+        {
+            SaveWindowLayout();
+
+            _isClosing = true;
+            IsEnabled = false;
+            e.Cancel = true;
+
+            try
+            {
+                await Task.Run(_viewModel.OnExit).ConfigureAwait(true);
+            }
+            catch
+            {
+                // ignored
+            }
+
+            _isClosed = true;
+            Close();
+        }
+        else
+        {
+            e.Cancel = !_isClosed;
+        }
+    }
+
+    private void OnNewDocumentClick(object? sender, EventArgs e)
+    {
+        _viewModel.NewDocumentCommand.Execute(SourceCodeKind.Regular);
+    }
+
+    private void OnNewScriptClick(object? sender, EventArgs e)
+    {
+        _viewModel.NewDocumentCommand.Execute(SourceCodeKind.Script);
+    }
+
+    private void OnSaveClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.SaveCommand.Execute(null);
+        }
+    }
+
+    private void OnFormatDocumentClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.FormatDocumentCommand.Execute(null);
+        }
+    }
+
+    private void OnCommentSelectionClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.CommentSelectionCommand.Execute(null);
+        }
+    }
+
+    private void OnUncommentSelectionClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.UncommentSelectionCommand.Execute(null);
+        }
+    }
+
+    private void OnRenameSymbolClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.RenameSymbolCommand.Execute(null);
+        }
+    }
+
+    private void OnRunClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.RunCommand.Execute(null);
+        }
+    }
+
+    private void OnTerminateClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.TerminateCommand.Execute(null);
+        }
+    }
+
+    private void OnToggleLiveModeClick(object? sender, EventArgs e)
+    {
+        if (_viewModel.CurrentOpenDocument is { } doc)
+        {
+            doc.ToggleLiveModeCommand.Execute(null);
+        }
+    }
+
+    private void OnFindClick(object? sender, EventArgs e)
+    {
+        _viewModel.CurrentOpenDocument?.RequestFind();
+    }
+
+    private void OnReplaceClick(object? sender, EventArgs e)
+    {
+        _viewModel.CurrentOpenDocument?.RequestReplace();
     }
 }

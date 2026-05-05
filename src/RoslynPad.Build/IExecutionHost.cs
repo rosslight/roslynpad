@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.Threading.Tasks;
+﻿using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 
@@ -10,6 +7,7 @@ namespace RoslynPad.Build;
 internal interface IExecutionHost
 {
     ExecutionPlatform Platform { get; set; }
+    bool UseFileBasedReferences { get; }
     string Name { get; set; }
     string DotNetExecutable { get; set; }
     ImmutableArray<MetadataReference> MetadataReferences { get; }
@@ -23,12 +21,11 @@ internal interface IExecutionHost
     event Action? ReadInput;
     event Action? RestoreStarted;
     event Action<RestoreResult>? RestoreCompleted;
-    event Action<RestoreResultObject>? RestoreMessage;
     event Action<ProgressResultObject>? ProgressChanged;
 
     void ClearRestoreCache();
     Task UpdateReferencesAsync(bool alwaysRestore);
     Task SendInputAsync(string input);
-    Task ExecuteAsync(string code, bool disassemble, OptimizationLevel? optimizationLevel);
+    Task ExecuteAsync(string path, bool disassemble, OptimizationLevel? optimizationLevel, CancellationToken cancellationToken);
     Task TerminateAsync();
 }

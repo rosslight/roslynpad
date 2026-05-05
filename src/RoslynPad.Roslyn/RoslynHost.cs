@@ -3,56 +3,50 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Host;
 using Microsoft.CodeAnalysis.Host.Mef;
 using RoslynPad.Roslyn.Diagnostics;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition.Hosting;
-using System.Linq;
 using System.Reflection;
 using AnalyzerReference = Microsoft.CodeAnalysis.Diagnostics.AnalyzerReference;
 using AnalyzerFileReference = Microsoft.CodeAnalysis.Diagnostics.AnalyzerFileReference;
 using Roslyn.Utilities;
-using System.IO;
-using Microsoft.CodeAnalysis.Editor.CSharp;
+using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.Internal.Log;
+using System.Diagnostics;
 
 namespace RoslynPad.Roslyn;
 
 public class RoslynHost : IRoslynHost
 {
     internal static readonly ImmutableArray<string> PreprocessorSymbols =
-        ImmutableArray.CreateRange(new[] { "TRACE", "DEBUG" });
+        ["TRACE", "DEBUG"];
 
     internal static readonly ImmutableArray<Assembly> DefaultCompositionAssemblies =
-        ImmutableArray.Create(
-            // Microsoft.CodeAnalysis.Workspaces
+        [
             typeof(WorkspacesResources).Assembly,
-            // Microsoft.CodeAnalysis.CSharp.Workspaces
             typeof(CSharpWorkspaceResources).Assembly,
-            // Microsoft.CodeAnalysis.Features
             typeof(FeaturesResources).Assembly,
-            // Microsoft.CodeAnalysis.CSharp.Features
             typeof(CSharpFeaturesResources).Assembly,
-            // RoslynPad.Roslyn
-            typeof(RoslynHost).Assembly);
+            typeof(RoslynHost).Assembly,
+        ];
+
+    private static readonly ImmutableArray<string> ExcludedTypeNames = [
+        "NullDiagnosticsRefresher"
+    ];
 
     internal static readonly ImmutableArray<Type> DefaultCompositionTypes =
         DefaultCompositionAssemblies.SelectMany(t => t.DefinedTypes).Select(t => t.AsType())
         .Concat(GetDiagnosticCompositionTypes())
-        .Concat(GetEditorFeaturesTypes())
+        .Where(t => !ExcludedTypeNames.Contains(t.Name))
+        .Distinct()
         .ToImmutableArray();
 
     private static IEnumerable<Type> GetDiagnosticCompositionTypes() => MetadataUtil.LoadTypesByNamespaces(
-        typeof(Microsoft.CodeAnalysis.Diagnostics.IDiagnosticService).Assembly,
+        typeof(Microsoft.CodeAnalysis.CodeFixes.ICodeFixService).Assembly,
         "Microsoft.CodeAnalysis.Diagnostics",
         "Microsoft.CodeAnalysis.CodeFixes");
 
-    private static IEnumerable<Type> GetEditorFeaturesTypes() => MetadataUtil.LoadTypesBy(
-        typeof(CSharpEditorResources).Assembly, t => t.Name.EndsWith("OptionsStorage", StringComparison.Ordinal))
-        .SelectMany(t => t.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic).Where(t => t.IsDefined(typeof(ExportLanguageServiceAttribute))));
-
     private readonly ConcurrentDictionary<DocumentId, RoslynWorkspace> _workspaces;
-    private readonly ConcurrentDictionary<DocumentId, Action<DiagnosticsUpdatedArgs>> _diagnosticsUpdatedNotifiers;
     private readonly IDocumentationProviderService _documentationProviderService;
     private readonly CompositionHost _compositionContext;
 
@@ -60,18 +54,21 @@ public class RoslynHost : IRoslynHost
     public ParseOptions ParseOptions { get; }
     public ImmutableArray<MetadataReference> DefaultReferences { get; }
     public ImmutableArray<string> DefaultImports { get; }
-    public ImmutableArray<string> DisabledDiagnostics { get; }
+    public ImmutableHashSet<string> DisabledDiagnostics { get; }
     public ImmutableArray<string> AnalyzerConfigFiles { get; }
 
     public RoslynHost(IEnumerable<Assembly>? additionalAssemblies = null,
         RoslynHostReferences? references = null,
-        ImmutableArray<string>? disabledDiagnostics = null,
+        ImmutableHashSet<string>? disabledDiagnostics = null,
         ImmutableArray<string>? analyzerConfigFiles = null)
     {
-        if (references == null) references = RoslynHostReferences.Empty;
+        #if DEBUG
+        // Logger.SetLogger(new DebugLogger());
+        #endif
 
-        _workspaces = new ConcurrentDictionary<DocumentId, RoslynWorkspace>();
-        _diagnosticsUpdatedNotifiers = new ConcurrentDictionary<DocumentId, Action<DiagnosticsUpdatedArgs>>();
+        references ??= RoslynHostReferences.Empty;
+
+        _workspaces = [];
 
         var partTypes = GetDefaultCompositionTypes();
 
@@ -93,9 +90,8 @@ public class RoslynHost : IRoslynHost
         DefaultReferences = references.GetReferences(DocumentationProviderFactory);
         DefaultImports = references.Imports;
 
-        DisabledDiagnostics = disabledDiagnostics ?? ImmutableArray<string>.Empty;
-        AnalyzerConfigFiles = analyzerConfigFiles ?? ImmutableArray<string>.Empty;
-        GetService<IDiagnosticService>().DiagnosticsUpdated += OnDiagnosticsUpdated;
+        DisabledDiagnostics = disabledDiagnostics ?? [];
+        AnalyzerConfigFiles = analyzerConfigFiles ?? [];
     }
 
     public Func<string, DocumentationProvider> DocumentationProviderFactory => _documentationProviderService.GetDocumentationProvider;
@@ -104,56 +100,44 @@ public class RoslynHost : IRoslynHost
 
     protected virtual ParseOptions CreateDefaultParseOptions() => new CSharpParseOptions(
         preprocessorSymbols: PreprocessorSymbols,
-        languageVersion: LanguageVersion.Preview);
+        languageVersion: LanguageVersion.Preview)
+        .WithFeatures([new(nameof(CSharpParseOptions.FileBasedProgram), bool.TrueString)]);
 
     public MetadataReference CreateMetadataReference(string location) => MetadataReference.CreateFromFile(location,
         documentation: _documentationProviderService.GetDocumentationProvider(location));
 
-    private void OnDiagnosticsUpdated(object? sender, DiagnosticsUpdatedArgs diagnosticsUpdatedArgs)
-    {
-        var documentId = diagnosticsUpdatedArgs.DocumentId;
-        if (documentId == null) return;
-
-        if (_diagnosticsUpdatedNotifiers.TryGetValue(documentId, out var notifier))
-        {
-            if (diagnosticsUpdatedArgs.Kind == DiagnosticsUpdatedKind.DiagnosticsCreated)
-            {
-                var remove = diagnosticsUpdatedArgs.Diagnostics.RemoveAll(d => DisabledDiagnostics.Contains(d.Id));
-                if (remove.Length != diagnosticsUpdatedArgs.Diagnostics.Length)
-                {
-                    diagnosticsUpdatedArgs = diagnosticsUpdatedArgs.WithDiagnostics(remove);
-                }
-            }
-
-            notifier(diagnosticsUpdatedArgs);
-        }
-    }
-
     public TService GetService<TService>() => _compositionContext.GetExport<TService>();
+    public TService GetWorkspaceService<TService>(DocumentId documentId) where TService : IWorkspaceService =>
+        _workspaces[documentId].Services.GetRequiredService<TService>();
 
     protected internal virtual void AddMetadataReference(ProjectId projectId, AssemblyIdentity assemblyIdentity)
     {
-        // TODO
     }
 
     public void CloseWorkspace(RoslynWorkspace workspace)
     {
-        if (workspace == null) throw new ArgumentNullException(nameof(workspace));
+        ArgumentNullException.ThrowIfNull(workspace);
 
         foreach (var documentId in workspace.CurrentSolution.Projects.SelectMany(p => p.DocumentIds))
         {
             _workspaces.TryRemove(documentId, out _);
-            _diagnosticsUpdatedNotifiers.TryRemove(documentId, out _);
         }
 
-        using (workspace) { }
+        workspace.Dispose();
     }
 
-    public virtual RoslynWorkspace CreateWorkspace() => new(HostServices, roslynHost: this);
+    public virtual RoslynWorkspace CreateWorkspace()
+    {
+        var workspace = new RoslynWorkspace(HostServices, roslynHost: this);
+        // create the updater before any document is opened
+        var diagnosticsUpdater = workspace.Services.GetRequiredService<IDiagnosticsUpdater>();
+        diagnosticsUpdater.DisabledDiagnostics = DisabledDiagnostics;
+        return workspace;
+    }
 
     public void CloseDocument(DocumentId documentId)
     {
-        if (documentId == null) throw new ArgumentNullException(nameof(documentId));
+        ArgumentNullException.ThrowIfNull(documentId);
 
         if (_workspaces.TryGetValue(documentId, out var workspace))
         {
@@ -167,9 +151,10 @@ public class RoslynHost : IRoslynHost
 
                 if (!solution.Projects.SelectMany(d => d.DocumentIds).Any())
                 {
-                    _workspaces.TryRemove(documentId, out workspace);
-
-                    using (workspace) { }
+                    if (_workspaces.TryRemove(documentId, out workspace))
+                    {
+                        workspace.Dispose();
+                    }
                 }
                 else
                 {
@@ -177,13 +162,11 @@ public class RoslynHost : IRoslynHost
                 }
             }
         }
-
-        _diagnosticsUpdatedNotifiers.TryRemove(documentId, out _);
     }
 
     public Document? GetDocument(DocumentId documentId)
     {
-        if (documentId == null) throw new ArgumentNullException(nameof(documentId));
+        ArgumentNullException.ThrowIfNull(documentId);
 
         return _workspaces.TryGetValue(documentId, out var workspace)
             ? workspace.CurrentSolution.GetDocument(documentId)
@@ -192,14 +175,14 @@ public class RoslynHost : IRoslynHost
 
     public DocumentId AddDocument(DocumentCreationArgs args)
     {
-        if (args == null) throw new ArgumentNullException(nameof(args));
+        ArgumentNullException.ThrowIfNull(args);
 
         return AddDocument(CreateWorkspace(), args);
     }
 
     public DocumentId AddRelatedDocument(DocumentId relatedDocumentId, DocumentCreationArgs args, bool addProjectReference = true)
     {
-        if (args == null) throw new ArgumentNullException(nameof(args));
+        ArgumentNullException.ThrowIfNull(args);
 
         if (!_workspaces.TryGetValue(relatedDocumentId, out var workspace))
         {
@@ -217,7 +200,7 @@ public class RoslynHost : IRoslynHost
         var solution = workspace.CurrentSolution;
 
         if (previousDocument == null)
-        { 
+        {
             solution = solution.AddAnalyzerReferences(GetSolutionAnalyzerReferences());
         }
 
@@ -231,35 +214,35 @@ public class RoslynHost : IRoslynHost
 
         _workspaces.TryAdd(documentId, workspace);
 
-        if (args.OnDiagnosticsUpdated != null)
-        {
-            _diagnosticsUpdatedNotifiers.TryAdd(documentId, args.OnDiagnosticsUpdated);
-        }
-
         var onTextUpdated = args.OnTextUpdated;
         if (onTextUpdated != null)
         {
-            workspace.ApplyingTextChange += (d, s) =>
-            {
-                if (documentId == d) onTextUpdated(s);
-            };
+            workspace.ApplyingTextChange += OnTextUpdated;
         }
 
         return documentId;
+
+        void OnTextUpdated(DocumentId id, SourceText sourceText)
+        {
+            if (documentId == id)
+            {
+                onTextUpdated?.Invoke(sourceText);
+            }
+        }
     }
 
     protected virtual IEnumerable<AnalyzerReference> GetSolutionAnalyzerReferences()
     {
         var loader = GetService<IAnalyzerAssemblyLoader>();
-        yield return new AnalyzerFileReference(typeof(Compilation).Assembly.Location, loader);
-        yield return new AnalyzerFileReference(typeof(CSharpResources).Assembly.Location, loader);
-        yield return new AnalyzerFileReference(typeof(FeaturesResources).Assembly.Location, loader);
-        yield return new AnalyzerFileReference(typeof(CSharpFeaturesResources).Assembly.Location, loader);
+        yield return new AnalyzerFileReference(MetadataUtil.GetAssemblyPath(typeof(Compilation).Assembly), loader);
+        yield return new AnalyzerFileReference(MetadataUtil.GetAssemblyPath(typeof(CSharpResources).Assembly), loader);
+        yield return new AnalyzerFileReference(MetadataUtil.GetAssemblyPath(typeof(FeaturesResources).Assembly), loader);
+        yield return new AnalyzerFileReference(MetadataUtil.GetAssemblyPath(typeof(CSharpFeaturesResources).Assembly), loader);
     }
 
     public void UpdateDocument(Document document)
     {
-        if (document == null) throw new ArgumentNullException(nameof(document));
+        ArgumentNullException.ThrowIfNull(document);
 
         if (!_workspaces.TryGetValue(document.Id, out var workspace))
         {
@@ -272,9 +255,9 @@ public class RoslynHost : IRoslynHost
     protected virtual CompilationOptions CreateCompilationOptions(DocumentCreationArgs args, bool addDefaultImports)
     {
         var compilationOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
-            usings: addDefaultImports ? DefaultImports : ImmutableArray<string>.Empty,
+            usings: addDefaultImports ? DefaultImports : [],
             allowUnsafe: true,
-            sourceReferenceResolver: new SourceFileResolver(ImmutableArray<string>.Empty, args.WorkingDirectory),
+            sourceReferenceResolver: new SourceFileResolver([], args.WorkingDirectory),
             // all #r references are resolved by the editor/msbuild
             metadataReferenceResolver: DummyScriptMetadataResolver.Instance,
             nullableContextOptions: NullableContextOptions.Enable);
@@ -318,7 +301,7 @@ public class RoslynHost : IRoslynHost
             isSubmission: isScript,
             parseOptions: parseOptions,
             compilationOptions: compilationOptions,
-            metadataReferences: previousProject != null ? ImmutableArray<MetadataReference>.Empty : DefaultReferences,
+            metadataReferences: previousProject != null ? [] : DefaultReferences,
             projectReferences: previousProject != null ? new[] { new ProjectReference(previousProject.Id) } : null)
             .WithAnalyzerConfigDocuments(analyzerConfigDocuments));
 
@@ -340,5 +323,16 @@ public class RoslynHost : IRoslynHost
 
             return string.Empty;
         }
+    }
+
+    private class DebugLogger : ILogger
+    {
+        public bool IsEnabled(FunctionId functionId) => true;
+        public void Log(FunctionId functionId, LogMessage logMessage) =>
+            Debug.WriteLine($"[{functionId}] {logMessage.GetMessage()}");
+        public void LogBlockEnd(FunctionId functionId, LogMessage logMessage, int uniquePairId, int delta, CancellationToken cancellationToken) =>
+            Debug.WriteLine($"[{functionId}] End: {logMessage.GetMessage()} (Duration: {delta}ms)");
+        public void LogBlockStart(FunctionId functionId, LogMessage logMessage, int uniquePairId, CancellationToken cancellationToken) =>
+            Debug.WriteLine($"[{functionId}] Start: {logMessage.GetMessage()}");
     }
 }

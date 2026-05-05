@@ -8,6 +8,8 @@ internal static class BuildCode
 {
     public const string ScriptInit = "RoslynPad.Runtime.RuntimeInitializer.Initialize();";
 
+    public const string ModuleInitAttributeFileName = "ModuleInitializerAttribute.cs";
+
     public const string ModuleInitAttribute = @"
             using System;
 
@@ -17,6 +19,8 @@ internal static class BuildCode
                 public sealed class ModuleInitializerAttribute : Attribute { }
             }
         ";
+
+    public const string ModuleInitFileName = "ModuleInitializer.cs";
 
     public const string ModuleInit = @"
             internal static class ModuleInitializer

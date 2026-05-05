@@ -1,10 +1,7 @@
-using System;
 using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
-using System.Linq;
 using System.Text.RegularExpressions;
 using RoslynPad.Build;
 
@@ -14,8 +11,8 @@ namespace RoslynPad.UI;
 public partial class DocumentViewModel : NotificationObject
 {
     internal const string AutoSaveSuffix = ".autosave";
-    
-    public static ImmutableArray<string> RelevantFileExtensions { get; } = ImmutableArray.Create(".cs", ".csx");
+
+    public static ImmutableArray<string> RelevantFileExtensions { get; } = [".cs", ".csx"];
 
     private bool _isExpanded;
     private bool? _isAutoSaveOnly;
@@ -29,11 +26,14 @@ public partial class DocumentViewModel : NotificationObject
         Path = rootPath;
         IsFolder = isFolder;
 
-        var nameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension(Name);
-        IsAutoSave = nameWithoutExtension.EndsWith(AutoSaveSuffix, StringComparison.OrdinalIgnoreCase);
-        if (IsAutoSave)
+        if (!isFolder)
         {
-            Name = string.Concat(nameWithoutExtension.AsSpan(0, nameWithoutExtension.Length - AutoSaveSuffix.Length), System.IO.Path.GetExtension(Name));
+            var nameWithoutExtension = System.IO.Path.GetFileNameWithoutExtension(Name);
+            IsAutoSave = nameWithoutExtension.EndsWith(AutoSaveSuffix, StringComparison.OrdinalIgnoreCase);
+            if (IsAutoSave)
+            {
+                Name = string.Concat(nameWithoutExtension.AsSpan(0, nameWithoutExtension.Length - AutoSaveSuffix.Length), System.IO.Path.GetExtension(Name));
+            }
         }
 
         IsSearchMatch = true;
@@ -193,7 +193,7 @@ public partial class DocumentViewModel : NotificationObject
                 .Select(file => new DocumentViewModel(file, isFolder: false))
                 .Where(file => !file.IsAutoSave));
         }
-                
+
         return new DocumentCollection(directories.Concat(files.OrderBy(file => file.OrderByName)));
     }
 
@@ -208,9 +208,11 @@ public partial class DocumentViewModel : NotificationObject
             return;
         }
 
+#pragma warning disable CA1309 // Use ordinal string comparison
         var insertIndex = children.IndexOf(d => d.IsFolder == documentViewModel.IsFolder &&
                                                 string.Compare(documentViewModel.OrderByName, d.OrderByName,
                                                     StringComparison.CurrentCulture) <= 0);
+#pragma warning restore CA1309 // Use ordinal string comparison
         if (insertIndex < 0)
         {
             insertIndex = documentViewModel.IsFolder ? children.IndexOf(c => !c.IsFolder) : children.Count;

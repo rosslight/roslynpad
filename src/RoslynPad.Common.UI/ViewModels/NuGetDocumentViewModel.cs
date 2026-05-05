@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Composition;
-using System.Threading;
-using System.Threading.Tasks;
+﻿using System.Composition;
 using RoslynPad.Utilities;
 
 namespace RoslynPad.UI;
@@ -31,7 +27,7 @@ public sealed class NuGetDocumentViewModel : NotificationObject
     {
         _nuGetViewModel = nuGetViewModel;
         _telemetryProvider = telemetryProvider;
-        _packages = Array.Empty<PackageData>();
+        _packages = [];
 
         InstallPackageCommand = commands.Create<PackageData>(InstallPackage);
     }
@@ -112,7 +108,7 @@ public sealed class NuGetDocumentViewModel : NotificationObject
     {
         if (string.IsNullOrWhiteSpace(searchTerm))
         {
-            Packages = Array.Empty<PackageData>();
+            Packages = [];
             IsPackagesMenuOpen = false;
             return;
         }
@@ -127,10 +123,17 @@ public sealed class NuGetDocumentViewModel : NotificationObject
                             exactMatch: ExactMatch, cancellationToken: cancellationToken), cancellationToken)
                     .ConfigureAwait(true);
 
+                cancellationToken.ThrowIfCancellationRequested();
+
+                foreach (var package in packages)
+                {
+                    package.InstallPackageCommand = InstallPackageCommand;
+                }
+
                 Packages = packages;
                 IsPackagesMenuOpen = Packages.Count > 0;
             }
-            catch (Exception e) when (!(e is OperationCanceledException))
+            catch (Exception e) when (e is not OperationCanceledException)
             {
                 _telemetryProvider.ReportError(e);
             }

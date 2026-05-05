@@ -1,7 +1,4 @@
-﻿using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Xml;
+﻿using System.Xml;
 using ICSharpCode.AvalonEdit.Highlighting;
 using ICSharpCode.AvalonEdit.Highlighting.Xshd;
 using ICSharpCode.AvalonEdit.Search;
@@ -13,7 +10,7 @@ public partial class ILViewer
     static ILViewer()
     {
         HighlightingManager.Instance.RegisterHighlighting(
-            "ILAsm", new[] { ".il" },
+            "ILAsm", [".il"],
             () =>
             {
                 using var stream = typeof(ILViewer).Assembly.GetManifestResourceStream(typeof(ILViewer), "ILAsm-Mode.xshd")!;
@@ -43,7 +40,7 @@ public partial class ILViewer
 
     private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        ((ILViewer)d).TextEditor.Document.Text = (string)e.NewValue;
+        ((ILViewer)d).TextEditor.Document.Text = e.NewValue as string ?? string.Empty;
     }
 
     public string Text

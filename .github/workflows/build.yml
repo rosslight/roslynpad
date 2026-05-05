@@ -1,26 +1,31 @@
 name: Build
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
+      uses: actions/setup-dotnet@v5
     - name: Build with dotnet
-      run: dotnet build -bl -c Release -m:1 src/RoslynPad.sln /p:EnableWindowsTargeting=true
+      run: dotnet build -bl -c release -m:1
     - name: Pack projects
       run: |
-        dotnet pack src/RoslynPad.Editor.Avalonia --configuration Release -bl  -m:1
-        dotnet pack src/RoslynPad.Roslyn.Avalonia --configuration Release -bl  -m:1
-        dotnet pack src/RoslynPad.Roslyn --configuration Release -bl  -m:1
+        dotnet pack src/RoslynPad.Editor.Avalonia --configuration Release -bl -m:1
+        dotnet pack src/RoslynPad.Roslyn.Avalonia --configuration Release -bl -m:1
+        dotnet pack src/RoslynPad.Roslyn --configuration Release -bl -m:1
     - name: Set up nuget
-      run: dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github "https://nuget.pkg.github.com/Darp-IT/index.json"
+      run: dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github "https://nuget.pkg.github.com/rosslight/index.json"
     - run: |
         ls -l
         ls -l src

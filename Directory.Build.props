@@ -1,36 +1,54 @@
 <Project>
   <PropertyGroup>
     <RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot>
-    <DefaultTargetFramework>net7.0</DefaultTargetFramework>
-    <LtsTargetFramework>net7.0</LtsTargetFramework>
+    <DefaultTargetFramework>net10.0</DefaultTargetFramework>
+    <LtsTargetFramework>net8.0</LtsTargetFramework>
+    <EarliestSupportedTargetFramework>net8.0</EarliestSupportedTargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <UseWPF Condition=" $(MSBuildProjectName.Contains('Windows')) ">true</UseWPF>
     <TargetFramework Condition=" '$(UseWPF)' == 'true' ">$(LtsTargetFramework)-windows</TargetFramework>
     <TargetFramework Condition=" '$(TargetFramework)' == '' and '$(TargetFrameworks)' == '' ">$(DefaultTargetFramework)</TargetFramework>
+    <IsMacOS>$([System.OperatingSystem]::IsMacOS())</IsMacOS>
+    <IsLinux>$([System.OperatingSystem]::IsLinux())</IsLinux>
+    <IsMacBuild Condition=" '$(IsMacOS)' == 'true' and ( '$(RuntimeIdentifier)' == '' or $(RuntimeIdentifier.Contains('osx')) ) ">true</IsMacBuild>
     <Features>strict</Features>
     <Deterministic>True</Deterministic>
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
-    <Version>4.7.0</Version>
-    <RoslynPadVersion>19.0.0</RoslynPadVersion>
+    <Version>5.0.0</Version>
+    <RoslynPadVersion>21.0.0</RoslynPadVersion>
+    <ApplicationVersion>$(RoslynPadVersion.Replace('.', ''))</ApplicationVersion>
+    <ApplicationDisplayVersion>$(RoslynPadVersion)</ApplicationDisplayVersion>
     <LangVersion>latest</LangVersion>
     <Nullable>Enable</Nullable>
+    <AnalysisMode>Recommended</AnalysisMode>
     <IsPackable>false</IsPackable>
-    <Authors>Eli Arbel</Authors>
+    <Authors>aelij;roslynpad</Authors>
     <PackageProjectUrl>https://roslynpad.net</PackageProjectUrl>
     <RepositoryUrl>https://github.com/roslynpad/roslynpad</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>Roslyn;RoslynPad</PackageTags>
     <PackageIcon>RoslynPad.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <SuppressNETCoreSdkPreviewMessage>true</SuppressNETCoreSdkPreviewMessage>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <IncludePackageReferencesDuringMarkupCompilation>true</IncludePackageReferencesDuringMarkupCompilation>
+    <TrimMode>partial</TrimMode>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <ImplicitUsings>true</ImplicitUsings>
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
   </PropertyGroup>
-  <ItemGroup Condition=" $(MSBuildProjectName.Contains('RoslynPad')) ">
-    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
-  </ItemGroup>
+  <PropertyGroup Condition=" '$(GITHUB_ACTIONS)' == 'true' ">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+  <PropertyGroup>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)\src\RoslynPad\Resources\RoslynPad.png" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)\src\RoslynPad\Resources\RoslynPad.png" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="README.md" Pack="true" PackagePath="\"
+          Condition=" Exists('$(MSBuildProjectDirectory)\README.md') " />
   </ItemGroup>
 </Project>

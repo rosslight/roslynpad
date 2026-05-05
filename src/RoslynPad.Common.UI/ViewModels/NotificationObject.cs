@@ -1,12 +1,8 @@
-using System;
 using System.Collections;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Threading;
 
 namespace RoslynPad.UI;
 
@@ -40,7 +36,7 @@ public abstract class NotificationObject : INotifyPropertyChanged, INotifyDataEr
             LazyInitializer.EnsureInitialized(ref _propertyErrors, () => new ConcurrentDictionary<string, List<ErrorInfo>>());
         }
 
-        var errors = _propertyErrors.GetOrAdd(propertyName, _ => new List<ErrorInfo>());
+        var errors = _propertyErrors.GetOrAdd(propertyName, _ => []);
         errors.RemoveAll(e => e.Id == id);
         errors.Add(new ErrorInfo(id, message));
 
@@ -80,10 +76,10 @@ public abstract class NotificationObject : INotifyPropertyChanged, INotifyDataEr
 
         List<ErrorInfo>? errors = null;
         _propertyErrors?.TryGetValue(propertyName, out errors);
-        return errors?.AsEnumerable() ?? Array.Empty<ErrorInfo>();
+        return errors?.AsEnumerable() ?? [];
     }
 
-    public bool HasErrors => _propertyErrors?.Any(c => c.Value.Any()) == true;
+    public bool HasErrors => _propertyErrors?.Any(c => c.Value.Count != 0) == true;
 
     public event EventHandler<DataErrorsChangedEventArgs>? ErrorsChanged;
 
@@ -92,17 +88,11 @@ public abstract class NotificationObject : INotifyPropertyChanged, INotifyDataEr
         ErrorsChanged?.Invoke(this, new DataErrorsChangedEventArgs(propertyName));
     }
 
-    protected class ErrorInfo
+    protected class ErrorInfo(string id, string message)
     {
-        public ErrorInfo(string id, string message)
-        {
-            Id = id;
-            Message = message;
-        }
+        public string Id { get; } = id;
 
-        public string Id { get; }
-
-        public string Message { get; }
+        public string Message { get; } = message;
 
         public override string ToString() => Message;
     }

@@ -1,9 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace RoslynPad.Build;
 
@@ -22,6 +18,8 @@ internal class ProcessUtil
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 UseShellExecute = false,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
             },
             EnableRaisingEvents = true,
         };
@@ -55,7 +53,6 @@ internal class ProcessUtil
             _process = process;
             _exitTcs = exitTcs;
             _standardOutput = new StringBuilder();
-
             _ = Task.Run(ReadStandardErrorAsync);
         }
 
