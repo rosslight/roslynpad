@@ -1,4 +1,11 @@
+using System.Runtime.InteropServices;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using Microsoft.VisualStudio.GeometryTests;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Classification;
 using Microsoft.VisualStudio.Text.Editor;
 
 namespace Microsoft.VisualStudio.BehaviorTests;
@@ -10,6 +17,101 @@ namespace Microsoft.VisualStudio.BehaviorTests;
 [TestClass]
 public sealed class MarginTests
 {
+    [TestMethod]
+    public async Task LineNumbersMatchFreshRenderingAfterEditingScrollingAndChangingFontOrZoom()
+    {
+        await HeadlessEditor.RunAsync(() =>
+        {
+            string text = string.Join('\n', Enumerable.Range(0, 100).Select(i => $"line {i}"));
+            var (host, window) = CreateHost(text, 100);
+            try
+            {
+                RenderNumbers(host);
+                host.TextView.TextBuffer.Insert(0, "inserted\n\n");
+                VerifyFreshRendering();
+                host.TextView.Options.SetOptionValue(DefaultTextViewOptions.ZoomLevelId, 175.0);
+                VerifyFreshRendering();
+                var formats = HeadlessEditor.Container.GetExport<IClassificationFormatMapService>()
+                    .GetClassificationFormatMap(host.TextView);
+                var original = formats.DefaultTextProperties;
+                try
+                {
+                    formats.DefaultTextProperties = original.SetFontRenderingEmSize(24);
+                    VerifyFreshRendering();
+                }
+                finally
+                {
+                    formats.DefaultTextProperties = original;
+                }
+            }
+            finally
+            {
+                window.Close();
+                host.Close();
+            }
+
+            void VerifyFreshRendering()
+            {
+                Scroll(host);
+                window.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+                var actual = RenderNumbers(host);
+                var (freshHost, freshWindow) = CreateHost(host.TextView.TextSnapshot.GetText(), host.TextView.ZoomLevel);
+                try
+                {
+                    CollectionAssert.AreEqual(RenderNumbers(freshHost), actual,
+                        "Cached line numbers must match a freshly shaped margin at the current line, font and zoom.");
+                }
+                finally
+                {
+                    freshWindow.Close();
+                    freshHost.Close();
+                }
+            }
+
+            static (IWpfTextViewHost Host, Window Window) CreateHost(string content, double zoom)
+            {
+                var view = HeadlessEditor.CreateView(content, width: 400, height: 300);
+                view.Options.SetOptionValue(DefaultTextViewHostOptions.LineNumberMarginId, true);
+                view.Options.SetOptionValue(DefaultTextViewOptions.ZoomLevelId, zoom);
+                var newHost = HeadlessEditor.Container.GetExport<ITextEditorFactoryService>().CreateTextViewHost(view, false);
+                var newWindow = new Window { Width = 400, Height = 300, Content = newHost.HostControl };
+                newWindow.Show();
+                Scroll(newHost);
+                newWindow.UpdateLayout();
+                Dispatcher.UIThread.RunJobs();
+                return (newHost, newWindow);
+            }
+
+            static void Scroll(IWpfTextViewHost target) => target.TextView.DisplayTextLineContainingBufferPosition(
+                target.TextView.TextSnapshot.GetLineFromLineNumber(50).Start, 0, ViewRelativePosition.Top);
+
+            static byte[] RenderNumbers(IWpfTextViewHost target)
+            {
+                var margin = target.GetTextViewMargin(PredefinedMarginNames.LineNumber) as IWpfTextViewMargin;
+                Assert.IsNotNull(margin);
+                var size = new PixelSize((int)Math.Ceiling(margin.VisualElement.Bounds.Width),
+                    (int)Math.Ceiling(margin.VisualElement.Bounds.Height));
+                using var bitmap = new RenderTargetBitmap(size, new Vector(96, 96));
+                bitmap.Render(margin.VisualElement);
+                int stride = size.Width * 4;
+                var pixels = new byte[stride * size.Height];
+                nint memory = Marshal.AllocHGlobal(pixels.Length);
+                try
+                {
+                    bitmap.CopyPixels(new PixelRect(size), memory, pixels.Length, stride);
+                    Marshal.Copy(memory, pixels, 0, pixels.Length);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(memory);
+                }
+                Assert.IsTrue(pixels.Any(value => value != 0), "The comparison must include rendered line-number glyphs.");
+                return pixels;
+            }
+        }).ConfigureAwait(false);
+    }
+
     [TestMethod]
     public async Task MarginsAreDiscoveredOrderedAndRemovable()
     {

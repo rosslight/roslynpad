@@ -15,6 +15,9 @@ internal sealed class ScriptEditorWorkspace : Workspace
         _buffer = buffer;
     }
 
+    // Completion can reuse bound state while the edited document is being analyzed.
+    public override bool PartialSemanticsEnabled => true;
+
     public override bool CanOpenDocuments => true;
 
     public override bool CanApplyChange(ApplyChangesKind feature) => feature == ApplyChangesKind.ChangeDocument;

@@ -341,6 +341,8 @@ internal sealed class FormattedLine : IFormattedLine
 
     internal ITextSnapshot VisualSnapshot => _visualSnapshot;
 
+    internal IReadOnlyList<ClassifiedTextSource.FormattingRun> FormattingRuns => _runs;
+
     /// <summary>The snapshot line start this row was formatted from (the view's line
     /// cache groups reusable rows by it).</summary>
     internal int ParagraphStart => _paragraphStart;

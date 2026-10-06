@@ -50,6 +50,7 @@ internal static class HeadlessEditor
         s_session.Dispatch(
             async () =>
             {
+                Avalonia.Threading.AvaloniaSynchronizationContext.InstallIfNeeded();
                 await action().ConfigureAwait(true);
                 return true;
             },
@@ -105,10 +106,21 @@ internal static class HeadlessEditor
     [Shared]
     internal sealed class HostServices
     {
-        private static readonly JoinableTaskContext s_joinableTaskContext = new();
+        private JoinableTaskContext? _joinableTaskContext;
 
         [Export]
-        public JoinableTaskContext JoinableTaskContext => s_joinableTaskContext;
+        public JoinableTaskContext JoinableTaskContext => _joinableTaskContext ??= CreateContext();
+
+        private static JoinableTaskContext CreateContext()
+        {
+            if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+            {
+                return Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(CreateContext).GetAwaiter().GetResult();
+            }
+
+            Avalonia.Threading.AvaloniaSynchronizationContext.InstallIfNeeded();
+            return new JoinableTaskContext(Thread.CurrentThread, SynchronizationContext.Current);
+        }
     }
 
     [Shared]

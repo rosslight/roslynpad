@@ -240,6 +240,8 @@ public sealed class IntellisenseTests
                 PumpUntil(
                     () => OverlayTextBlocks(view).Any(t => BlockText(t) == $"Docs for {FakeLanguage.Words[0]}"),
                     "description pane shows the selected item's docs");
+                Assert.IsFalse(source.DescriptionRequestedOnUiThread,
+                    "Description providers may bind symbols and must run off the UI thread.");
 
                 // Moving the selection re-fetches for the newly selected item.
                 presenter.Update(new StubCompletionSession(view), MakePresentation(2));

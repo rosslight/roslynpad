@@ -382,6 +382,9 @@ internal sealed class FormattedLineSource : IFormattedLineSource
         return DefaultTextProperties;
     }
 
+    internal bool HasSameFormatting(ITextSnapshotLine visualLine, IReadOnlyList<ClassifiedTextSource.FormattingRun> previousRuns)
+        => BuildRuns(visualLine, visualLine.Length).SequenceEqual(previousRuns);
+
     /// <summary>
     /// Builds a dense list of formatting runs covering [0, lineLength): classified spans map
     /// through the classification format map, gaps get the default properties.

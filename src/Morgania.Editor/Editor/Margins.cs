@@ -9,6 +9,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
+using Avalonia.Media.TextFormatting;
 
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Utilities;
@@ -136,6 +137,8 @@ public sealed class LineNumberMarginProvider : IWpfTextViewMarginProvider
         private static readonly IBrush s_numberBrush = new SolidColorBrush(Color.FromRgb(0x85, 0x85, 0x85));
 
         private readonly IWpfTextView _view;
+        private readonly Dictionary<int, TextLayout> _numberLayouts = [];
+        private (Typeface Typeface, double FontSize)? _numberFormat;
         private bool _isDisposed;
 
         public LineNumberMargin(IWpfTextView view)
@@ -182,6 +185,12 @@ public sealed class LineNumberMarginProvider : IWpfTextViewMarginProvider
 
             var properties = _view.FormattedLineSource.DefaultTextProperties;
             double zoom = _view.ZoomLevel / 100.0;
+            var format = (Typeface: properties.Typeface, FontSize: properties.FontRenderingEmSize * zoom);
+            if (_numberFormat != format)
+            {
+                ClearNumbers();
+                _numberFormat = format;
+            }
             foreach (var line in textViewLines)
             {
                 if (!line.IsFirstTextViewLineForSnapshotLine)
@@ -190,25 +199,45 @@ public sealed class LineNumberMarginProvider : IWpfTextViewMarginProvider
                 }
 
                 int number = line.Start.GetContainingLine().LineNumber + 1;
-                var text = new FormattedText(
-                    number.ToString(CultureInfo.InvariantCulture),
-                    CultureInfo.InvariantCulture,
-                    FlowDirection.LeftToRight,
-                    properties.Typeface,
-                    properties.FontRenderingEmSize * zoom,
-                    s_numberBrush);
-                context.DrawText(text, new Point(Bounds.Width - text.Width - 6.0 * zoom, (line.TextTop - _view.ViewportTop) * zoom));
+                if (!_numberLayouts.TryGetValue(number, out var text))
+                {
+                    text = new TextLayout(number.ToString(CultureInfo.InvariantCulture),
+                        format.Typeface, format.FontSize, s_numberBrush);
+                    _numberLayouts.Add(number, text);
+                }
+                text.Draw(context, new Point(Bounds.Width - text.Width - 6.0 * zoom, (line.TextTop - _view.ViewportTop) * zoom));
             }
         }
 
         private void Refresh()
         {
+            if (_view is ITextView2 view2 && view2.TryGetTextViewLines(out var lines))
+            {
+                int first = lines.FirstVisibleLine.Start.GetContainingLine().LineNumber + 1;
+                int last = lines.LastVisibleLine.Start.GetContainingLine().LineNumber + 1;
+                foreach (int number in _numberLayouts.Keys.Where(number => number < first || number > last).ToArray())
+                {
+                    _numberLayouts[number].Dispose();
+                    _numberLayouts.Remove(number);
+                }
+            }
             IsVisible = Enabled;
             InvalidateMeasure();
             InvalidateVisual();
         }
 
-        public void Dispose() => _isDisposed = true;
+        private void ClearNumbers()
+        {
+            foreach (var layout in _numberLayouts.Values)
+                layout.Dispose();
+            _numberLayouts.Clear();
+        }
+
+        public void Dispose()
+        {
+            _isDisposed = true;
+            ClearNumbers();
+        }
     }
 }
 

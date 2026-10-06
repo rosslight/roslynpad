@@ -454,17 +454,11 @@ internal sealed class CompletionPresenter : ICompletionPresenter
     {
         try
         {
-            // Debounce arrow-key runs through the list; the fetch and the UI mutation run
-            // on the UI thread (the source contract and Avalonia both require it).
+            // Description providers run on a background thread; only the rendered pane needs the UI thread.
             await Task.Delay(150, token).ConfigureAwait(false);
-            await Dispatcher.UIThread.InvokeAsync(async () =>
+            var description = await item.Source.GetDescriptionAsync(session, item, token).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || !_isOpen)
-                {
-                    return;
-                }
-
-                var description = await item.Source.GetDescriptionAsync(session, item, token).ConfigureAwait(true);
                 if (token.IsCancellationRequested || !_isOpen)
                 {
                     return;
@@ -472,7 +466,7 @@ internal sealed class CompletionPresenter : ICompletionPresenter
 
                 _describedItem = item;
                 SetDescription(BuildDescriptionControl(description));
-            }).ConfigureAwait(false);
+            });
         }
         catch (OperationCanceledException)
         {

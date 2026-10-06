@@ -59,11 +59,11 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
     private readonly HashSet<FormattedLine> _reusedRows = [];
     private readonly Dictionary<FormattedLine, double> _reusedOldTops = [];
 
-    // Spans (on the rendered snapshot) whose classification changed since the last layout.
-    // Rows crossing them are excluded from the line cache so the next layout reformats them
-    // with fresh classification. Only meaningful while the line source is unchanged; an edit
-    // invalidates the whole source anyway.
+    // Spans on the rendered snapshot whose classification or adornments changed.
+    // Classification notifications can cover unchanged paragraphs; compare their runs
+    // before discarding shaped text. Adornment changes always require reformatting.
     private readonly List<Span> _classificationDamage = [];
+    private readonly List<Span> _adornmentDamage = [];
     private ITextSnapshot _textSnapshot;
     private readonly Border _backgroundLayer = new() { Background = Brushes.Transparent };
     private double _viewportLeft;
@@ -672,19 +672,12 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
             anchorPosition = anchorPosition.TranslateTo(_textSnapshot, PointTrackingMode.Negative);
             var source = EnsureLineSource();
 
-            // The line cache: rows of the published collection are reusable
-            // while the line source is unchanged (the source is a pure function of
-            // snapshot × format map × options × wrap width, so identity is the cache key).
-            // Steady-state scrolling then translates lines instead of reformatting them.
+            // Reuse shaped paragraphs when their text, formatting and adornments still match.
             _reusedRows.Clear();
             _reusedOldTops.Clear();
-            _reusableRows = oldCollection is not null && ReferenceEquals(source, _lineCollectionSource)
-                ? oldCollection.Lines
-                    .Where(row => !_classificationDamage.Any(damage => row.ExtentIncludingLineBreak.IntersectsWith(damage)))
-                    .GroupBy(static row => row.ParagraphStart)
-                    .ToDictionary(static group => group.Key, static group => group.ToList())
-                : null;
+            _reusableRows = GetReusableRows(source, oldCollection);
             _classificationDamage.Clear();
+            _adornmentDamage.Clear();
 
             lines = BuildLines(source, anchorPosition, verticalDistance, relativeTo);
 
@@ -717,6 +710,7 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
                         continue;
                     }
 
+                    _textLayer.Children.Remove((Control)oldLine.GetOrCreateVisual());
                     oldLine.RemoveVisual();
                     oldLine.Dispose();
                 }
@@ -724,10 +718,13 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
 
             _reusableRows = null;
 
-            _textLayer.Children.Clear();
             foreach (var line in lines)
             {
-                _textLayer.Children.Add((Control)line.GetOrCreateVisual());
+                var visual = (Control)line.GetOrCreateVisual();
+                if (visual.Parent != _textLayer)
+                {
+                    _textLayer.Children.Add(visual);
+                }
             }
 
             PositionLineVisuals();
@@ -918,10 +915,54 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
         }
     }
 
+    private Dictionary<int, List<FormattedLine>>? GetReusableRows(
+        FormattedLineSource source, WpfTextViewLineCollection? oldCollection)
+    {
+        if (oldCollection is null || _lineCollectionSource is null
+            || source.WordWrapWidth != _lineCollectionSource.WordWrapWidth)
+        {
+            return null;
+        }
+
+        var reusable = new Dictionary<int, List<FormattedLine>>();
+        foreach (var group in oldCollection.Lines.GroupBy(static row => row.ParagraphStart))
+        {
+            var rows = group.ToList();
+            if (rows.Any(row => _adornmentDamage.Any(damage => row.ExtentIncludingLineBreak.IntersectsWith(damage))))
+            {
+                continue;
+            }
+
+            var oldParagraph = rows[0].VisualSnapshot.GetLineFromPosition(group.Key);
+            var translated = oldParagraph.ExtentIncludingLineBreak.TranslateTo(source.TopTextSnapshot, SpanTrackingMode.EdgeExclusive);
+            var newParagraph = translated.Start.GetContainingLine();
+            if (newParagraph.Start != translated.Start
+                || oldParagraph.Start.TranslateTo(source.TopTextSnapshot, PointTrackingMode.Negative) != newParagraph.Start
+                || newParagraph.LengthIncludingLineBreak != translated.Length
+                || newParagraph.GetTextIncludingLineBreak() != oldParagraph.GetTextIncludingLineBreak())
+            {
+                continue;
+            }
+
+            if (rows.Any(row => _classificationDamage.Any(damage => row.ExtentIncludingLineBreak.IntersectsWith(damage)))
+                && !source.HasSameFormatting(newParagraph, rows[0].FormattingRuns))
+            {
+                continue;
+            }
+
+            foreach (var row in rows)
+            {
+                row.SetSnapshot(source.TopTextSnapshot, source.SourceTextSnapshot);
+            }
+            reusable.Add(newParagraph.Start.Position, rows);
+        }
+        return reusable;
+    }
+
     private List<FormattedLine> FormatSnapshotLine(FormattedLineSource source, ITextSnapshotLine snapshotLine)
     {
-        // Cache hit: the published collection already formatted this snapshot line with
-        // the same source; reuse the rows (their old tops decide Translated vs. None).
+        // Cache hit: the paragraph retained its shaped text and current snapshot mapping.
+        // Its old row tops decide Translated vs. None.
         if (_reusableRows is not null && _reusableRows.Remove(snapshotLine.Start.Position, out var cached))
         {
             foreach (var row in cached)
@@ -963,9 +1004,12 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
         if (_sequencer is null)
         {
             _sequencer = _factory.CreateSequencer(this);
-            _sequencer.SequenceChanged += (_, _) =>
+            _sequencer.SequenceChanged += (_, e) =>
             {
-                InvalidateLineSource();
+                foreach (var span in e.Span.GetSpans(_textSnapshot))
+                {
+                    _adornmentDamage.Add(span);
+                }
                 QueueRelayout();
             };
         }
@@ -993,9 +1037,13 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
         return _lineSource;
     }
 
-    private void InvalidateLineSource()
+    private void InvalidateLineSource(bool preserveRows = false)
     {
         _lineSource = null;
+        if (!preserveRows)
+        {
+            _lineCollectionSource = null;
+        }
         _maxTextRightCoordinate = 0.0;
     }
 
@@ -1699,7 +1747,7 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
 
     private void OnTextBufferChanged(object? sender, TextContentChangedEventArgs e)
     {
-        InvalidateLineSource();
+        InvalidateLineSource(preserveRows: true);
         if (_inLayout || _lineCollection is null)
         {
             QueueRelayout();
@@ -1717,7 +1765,8 @@ internal sealed class WpfTextView : Panel, IWpfTextView, ITextView2
         // An edit-buffer change propagates into the visual buffer and already arrives
         // through OnTextBufferChanged; this handler covers projection-only changes
         // (elision collapse/expand), which relayout the same way edits do.
-        if (TextBuffer.CurrentSnapshot == _textSnapshot)
+        if (TextBuffer.CurrentSnapshot == _textSnapshot
+            && _lineCollectionSource?.TopTextSnapshot != e.After)
         {
             OnTextBufferChanged(sender, e);
         }

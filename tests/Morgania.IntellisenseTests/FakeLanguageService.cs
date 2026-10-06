@@ -58,6 +58,7 @@ public sealed class FakeCompletionSourceProvider : IAsyncCompletionSourceProvide
 
 internal sealed class FakeCompletionSource : IAsyncCompletionSource
 {
+    public bool DescriptionRequestedOnUiThread { get; private set; }
     public CompletionStartData InitializeCompletion(CompletionTrigger trigger, SnapshotPoint triggerLocation, CancellationToken token)
         => new(CompletionParticipation.ProvidesItems, FakeLanguage.GetWordSpanAt(triggerLocation));
 
@@ -83,7 +84,10 @@ internal sealed class FakeCompletionSource : IAsyncCompletionSource
     }
 
     public Task<object> GetDescriptionAsync(IAsyncCompletionSession session, CompletionItem item, CancellationToken token)
-        => Task.FromResult<object>(new ClassifiedTextElement(new ClassifiedTextRun("text", $"Docs for {item.DisplayText}")));
+    {
+        DescriptionRequestedOnUiThread = Avalonia.Threading.Dispatcher.UIThread.CheckAccess();
+        return Task.FromResult<object>(new ClassifiedTextElement(new ClassifiedTextRun("text", $"Docs for {item.DisplayText}")));
+    }
 }
 
 [Export(typeof(IAsyncQuickInfoSourceProvider))]
