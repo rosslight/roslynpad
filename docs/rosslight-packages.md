@@ -10,6 +10,8 @@ The workflow publishes only when running in `rosslight/roslynpad`.
 
 The initial `5.9.0-rosslight.1` release predates the tag flow and was published by workflow dispatch.
 Do not create a tag for that already published version; use a new version for each release.
+If publication fails after some packages have been pushed, leave that version unused and publish the
+complete package set under a new version. Published package versions cannot be overwritten.
 
 The package set is `Morgania.Editor.Abstractions`, `Morgania.Editor`,
 `Morgania.CodeAnalysis.EditorFeatures`, `Morgania.CodeAnalysis.Editor`, and `RoslynPad.Themes`.
