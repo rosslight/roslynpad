@@ -8,6 +8,9 @@ Publish an immutable version with a `packages/v<version>` tag. Workflow dispatch
 Publishing an existing version fails rather than silently retaining packages from another commit.
 The workflow publishes only when running in `rosslight/roslynpad`.
 
+The initial `5.9.0-rosslight.1` release predates the tag flow and was published by workflow dispatch.
+Do not create a tag for that already published version; use a new version for each release.
+
 The package set is `Morgania.Editor.Abstractions`, `Morgania.Editor`,
 `Morgania.CodeAnalysis.EditorFeatures`, `Morgania.CodeAnalysis.Editor`, and `RoslynPad.Themes`.
 Consumers must map `Morgania.*` and `RoslynPad.Themes` to
