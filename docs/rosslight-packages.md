@@ -4,7 +4,8 @@ This fork tracks upstream RoslynPad and publishes its Morgania editor stack for 
 The fork-specific change is the GitHub Packages build/release pipeline; editor fixes come from upstream source.
 
 Builds on main and pull requests validate and upload package artifacts without publishing.
-Publish an immutable version with a `packages/v<version>` tag or the workflow's version input.
+Publish an immutable version with a `packages/v<version>` tag. Workflow dispatch only validates and uploads artifacts.
+Publishing an existing version fails rather than silently retaining packages from another commit.
 The workflow publishes only when running in `rosslight/roslynpad`.
 
 The package set is `Morgania.Editor.Abstractions`, `Morgania.Editor`,
