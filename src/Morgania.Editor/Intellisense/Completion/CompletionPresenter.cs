@@ -79,6 +79,7 @@ internal sealed class CompletionPresenter : ICompletionPresenter
     private IAsyncCompletionSession? _session;
     private CancellationTokenSource? _descriptionCancellation;
     private CompletionItem? _describedItem;
+    private CompletionPresentationViewModel? _presentation;
     private bool _isOpen;
     private bool _updatingFilters;
 
@@ -229,18 +230,24 @@ internal sealed class CompletionPresenter : ICompletionPresenter
 
     private void Render(CompletionPresentationViewModel presentation)
     {
+        var brushes = PopupBrushes.Read(_editorFormatMap);
+        bool samePalette = brushes == _brushes;
+        bool reuseRows = samePalette && _presentation?.Items.Equals(presentation.Items) == true;
+        bool reuseFilters = samePalette && _presentation?.Filters.Equals(presentation.Filters) == true;
         VisibleItems = presentation.Items;
         SelectedIndex = presentation.SelectSuggestionItem ? -1 : presentation.SelectedItemIndex;
         IsSoftSelection = presentation.UseSoftSelection;
 
         // The presenter lives as long as its view; the host may have re-themed the popup
         // palette since the last session.
-        _brushes = PopupBrushes.Read(_editorFormatMap);
+        _brushes = brushes;
         ApplyBrushes();
 
         RenderSuggestionRow(presentation);
-        RenderItems(presentation);
-        RenderFilters(presentation);
+        RenderItems(presentation, reuseRows);
+        if (!reuseFilters)
+            RenderFilters(presentation);
+        _presentation = presentation;
     }
 
     private void RenderSuggestionRow(CompletionPresentationViewModel presentation)
@@ -261,34 +268,41 @@ internal sealed class CompletionPresenter : ICompletionPresenter
         _suggestionRow.BorderBrush = selected && presentation.UseSoftSelection ? _brushes.SoftSelectionBorder : Brushes.Transparent;
     }
 
-    private void RenderItems(CompletionPresentationViewModel presentation)
+    private void RenderItems(CompletionPresentationViewModel presentation, bool reuseRows)
     {
-        _itemsPanel.Children.Clear();
+        if (!reuseRows)
+            _itemsPanel.Children.Clear();
         bool anyIcon = presentation.Items.Any(static item => item.CompletionItem.Icon is not null);
         for (int i = 0; i < presentation.Items.Length; i++)
         {
             var item = presentation.Items[i];
             bool selected = !presentation.SelectSuggestionItem && i == presentation.SelectedItemIndex;
             bool fullSelection = selected && !presentation.UseSoftSelection;
-            var row = new Border
+            var row = reuseRows ? (Border)_itemsPanel.Children[i] : new Border
             {
                 Padding = new Thickness(6.0, 1.0),
                 BorderThickness = new Thickness(1.0),
-                // Soft selection marks the selected item without claiming it: an outline
-                // instead of the filled selection (the walkthrough's soft-selection visual).
-                Background = fullSelection ? _brushes.SelectionBackground : Brushes.Transparent,
-                BorderBrush = selected && presentation.UseSoftSelection ? _brushes.SoftSelectionBorder : Brushes.Transparent,
                 Child = BuildItemContent(item, anyIcon),
                 Tag = item.CompletionItem,
             };
+            // Soft selection outlines the row; full selection fills it.
+            row.Background = fullSelection ? _brushes.SelectionBackground : Brushes.Transparent;
+            row.BorderBrush = selected && presentation.UseSoftSelection ? _brushes.SoftSelectionBorder : Brushes.Transparent;
             if (fullSelection)
             {
                 row.SetValue(TextElement.ForegroundProperty, _brushes.SelectionForeground);
             }
+            else
+            {
+                row.ClearValue(TextElement.ForegroundProperty);
+            }
 
-            row.PointerPressed += OnRowPressed;
-            row.DoubleTapped += OnRowDoubleTapped;
-            _itemsPanel.Children.Add(row);
+            if (!reuseRows)
+            {
+                row.PointerPressed += OnRowPressed;
+                row.DoubleTapped += OnRowDoubleTapped;
+                _itemsPanel.Children.Add(row);
+            }
 
             if (selected)
             {

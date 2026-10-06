@@ -163,6 +163,29 @@ public sealed class IntellisenseTests
                 Assert.IsFalse(toggles[0].IsChecked == true);
                 Assert.IsTrue(toggles[1].IsChecked == true);
 
+                var rows = presenter.SurfaceElement.GetVisualDescendants().OfType<Border>()
+                    .Where(row => row.Tag is CompletionItem).ToArray();
+                presenter.Update(new StubCompletionSession(view), new CompletionPresentationViewModel(
+                    items, filters, selectedItemIndex: 2,
+                    applicableToSpan: presentation.ApplicableToSpan,
+                    useSoftSelection: false, displaySuggestionItem: true,
+                    selectSuggestionItem: false, suggestionItem: null,
+                    suggestionItemOptions: presentation.SuggestionItemOptions));
+                var updatedRows = presenter.SurfaceElement.GetVisualDescendants().OfType<Border>()
+                    .Where(row => row.Tag is CompletionItem).ToArray();
+                // A selection change must preserve the mouse targets and measured row content.
+                // Replacing them forces the whole list through layout again on every click.
+                Assert.AreEqual(rows.Length, updatedRows.Length);
+                for (int i = 0; i < rows.Length; i++)
+                    Assert.AreSame(rows[i], updatedRows[i], "selection retains completion rows");
+                Assert.AreSame(toggles[0], presenter.SurfaceElement.GetVisualDescendants().OfType<ToggleButton>().First(),
+                    "selection retains the filter's input target");
+                Assert.AreEqual(2, presenter.SelectedIndex);
+                Assert.IsFalse(presenter.IsSoftSelection);
+                Assert.AreEqual(Avalonia.Media.Brushes.Transparent, rows[1].Background);
+                Assert.AreEqual(Avalonia.Media.Brushes.Transparent, rows[1].BorderBrush);
+                Assert.AreNotEqual(Avalonia.Media.Brushes.Transparent, rows[2].Background);
+
                 // Toggling a filter reports the full updated state set through FiltersChanged.
                 CompletionFilterChangedEventArgs? filterArgs = null;
                 presenter.FiltersChanged += (_, e) => filterArgs = e;
