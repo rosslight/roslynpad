@@ -8,6 +8,7 @@ using Microsoft.VisualStudio.Text.Editor.Commanding;
 using Microsoft.VisualStudio.Text.Editor.Commanding.Commands;
 using Microsoft.VisualStudio.Text.Outlining;
 using Microsoft.VisualStudio.Utilities;
+using Morgania.CodeAnalysis.Editor.Theming;
 using RoslynPad.Editor;
 using RoslynPad.UI;
 
@@ -214,7 +215,7 @@ internal sealed class CodeEditorView : ContentControl, IDisposable
         var theme = new ThemeClassificationFormats(mainViewModel.Theme);
         theme.Apply(formatMap, registry);
         theme.ApplyInlineDiagnostics(formatMap, registry);
-        theme.ApplyBuildOutput(formatMap, registry);
+        BuildOutputClassificationTypes.ApplyTheme(mainViewModel.Theme, formatMap, registry);
 
         if (_editorFormatMap is { } editorFormatMap)
         {

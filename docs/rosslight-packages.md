@@ -1,7 +1,9 @@
 # Rosslight editor packages
 
 This fork tracks upstream RoslynPad and publishes its Morgania editor stack for WCP Commander.
-The fork-specific change is the GitHub Packages build/release pipeline; editor fixes come from upstream source.
+Editor fixes come from upstream source. The fork retains its GitHub Packages release pipeline
+and exposes script hosting and upstream theme mapping through `Morgania.CodeAnalysis.Editor`,
+so consumers do not need copies of application or demo integration code.
 
 Builds on main and pull requests validate and upload package artifacts without publishing.
 Publish an immutable version with a `packages/v<version>` tag. Workflow dispatch only validates and uploads artifacts.

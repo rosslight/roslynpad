@@ -233,7 +233,7 @@ implementation time.
 
 Because `ThemeClassificationFormats.Apply` clears formats the theme doesn't style, the build
 output types are themed the same way inline diagnostics are: a new
-`ThemeClassificationFormats.ApplyBuildOutput(formatMap, registry)` sets explicit foregrounds
+`BuildOutputClassificationTypes.ApplyTheme(theme, formatMap, registry)` sets explicit foregrounds
 from the **current VS Code theme's own colors**, called from `CodeEditorView.ApplyTheme()` so
 it runs on view creation and every theme change. No invented hex values; each type resolves
 through a fallback chain of theme keys, and if no key resolves, the type is left unstyled
@@ -260,7 +260,7 @@ themes actually define.
 Each type additionally needs a **colorless, registration-only** `ClassificationFormatDefinition`
 export (in `BuildOutputClassification.cs`): Morgania's classification format map builds its
 key table from the exported definitions and only reads explicit text properties for registered
-types — without the exports, the colors `ApplyBuildOutput` sets are silently never read back.
+types — without the exports, the colors `ApplyTheme` sets are silently never read back.
 The definitions must stay colorless; any static color would be dead weight anyway (cleared on
 first theme application — the theme is the single source of colors).
 
@@ -301,7 +301,7 @@ document VM:
 2. **Plumbing**: command-line changes (design-time restore for both modes, stub-source and
    `bin`-copy removal), `-getResultOutputFile` JSON relocation, streaming events, restore-cache
    status, and whitespace preservation. Verifiable headless (run a build, assert event stream).
-3. **View + classification + theming**: content type, classifier, `ApplyBuildOutput`,
+3. **View + classification + theming**: content type, classifier, `ApplyTheme`,
    `BuildOutputView`/`BuildOutputViewModel`, combo + auto-switch.
 4. **Dock + polish**: pane registration, layout-migration guard, tail auto-scroll, cached-restore
    status.

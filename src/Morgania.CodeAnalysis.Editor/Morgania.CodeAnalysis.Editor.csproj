@@ -20,6 +20,10 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Morgania.CodeAnalysis.EditorFeatures/Morgania.CodeAnalysis.EditorFeatures.csproj" />
+    <ProjectReference Include="../RoslynPad.Themes/RoslynPad.Themes.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Theming/Resources/*.json" />
   </ItemGroup>
   <ItemGroup>
     <IgnoresAccessChecksTo Include="Microsoft.CodeAnalysis.CSharp" />

@@ -18,8 +18,33 @@ needs beyond the editor platform itself:
 - **UI helpers**: `Glyph.ToImageSource()` (Roslyn glyphs → Avalonia `DrawingImage`),
   `TaggedText.ToTextBlock()` rich-text rendering, `ImageCatalog` for known image ids.
 
-The package does not include a Roslyn workspace implementation — hosts bring their own
-`Workspace` and open documents over editor buffers (see the samples below).
+For an embedded C# script editor, the package includes `ScriptEditorHost` and
+`ScriptEditorSession` in `Morgania.CodeAnalysis.Editor.Scripting`. A session owns
+the native text view and its buffer-backed Roslyn workspace. Script references,
+imports, globals and language version are supplied by the application.
+
+```csharp
+// Initialize one shared host on the Avalonia UI thread.
+using var host = new ScriptEditorHost();
+await host.InitializeAsync();
+using var session = await host.CreateSessionAsync(
+    code, scriptAssemblies, scriptImports, typeof(ScriptGlobals), LanguageVersion.CSharp12);
+session.ApplyTheme(theme);
+editorContainer.Content = session.Control;
+```
+
+Create sessions and apply themes on the UI thread. Dispose each session when its
+view is no longer needed, then dispose the host. Composition and reference loading
+run in the background. `Text`, `Buffer`, `View` and `Workspace` expose the native
+editing services for binding, options and code actions. Font, line numbers and
+outlining preferences belong to the application.
+
+`Morgania.CodeAnalysis.Editor.Theming.ThemeClassificationFormats` applies VS Code
+themes to native classification and editor format maps. RoslynPad uses the same
+adapter. Consumers need no access to internal editor features.
+
+Applications with their own document model can still bring their own `Workspace`
+and open documents over editor buffers, as shown below.
 
 ## Getting started
 

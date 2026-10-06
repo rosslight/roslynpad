@@ -2,7 +2,10 @@ using System.Composition;
 using System.Text.RegularExpressions;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Classification;
+using Microsoft.VisualStudio.Text.Formatting;
 using Microsoft.VisualStudio.Utilities;
+using Morgania.CodeAnalysis.Editor.Theming;
+using RoslynPad.Themes;
 
 namespace RoslynPad.Editor;
 
@@ -21,6 +24,36 @@ public static class BuildOutputClassificationTypes
     public const string LogCustom2 = "LogCustom2";
     public const string LogCustom3 = "LogCustom3";
     public const string LogCustom4 = "LogCustom4";
+
+    /// <summary>
+    /// Feeds the theme's colors to the build output pane's classification types (VSColorOutput's
+    /// scheme). The colors resolve through the theme's own palette — severity foregrounds and the
+    /// terminal ANSI colors — so both light and dark themes are correct by construction.
+    /// BuildText stays unstyled and inherits the default foreground.
+    /// </summary>
+    public static void ApplyTheme(Theme theme, IClassificationFormatMap formatMap, IClassificationTypeRegistryService registry)
+    {
+        Set(BuildHead, "terminal.ansiGreen");
+        Set(LogError, "editorError.foreground");
+        Set(LogWarning, "editorWarning.foreground");
+        Set(LogInformation, "editorInfo.foreground");
+        Set(LogCustom1, "terminal.ansiCyan");
+        Set(LogCustom2, "terminal.ansiMagenta");
+        Set(LogCustom3, "terminal.ansiBrightMagenta");
+        Set(LogCustom4, "terminal.ansiBrightYellow");
+
+        void Set(string classification, string colorId)
+        {
+            if (theme.TryGetColor(colorId) is not { } themeColor ||
+                registry.GetClassificationType(classification) is not { } type)
+            {
+                return;
+            }
+
+            formatMap.SetExplicitTextProperties(type, TextFormattingRunProperties.CreateTextFormattingRunProperties()
+                .SetForeground(ThemeClassificationFormats.ParseThemeColor(themeColor)));
+        }
+    }
 }
 
 /// <summary>The content type and classification types for the build output pane.</summary>
@@ -81,7 +114,7 @@ public sealed class BuildOutputClassificationDefinitions
 
 // Registration-only format definitions: the classification format map reads explicit text
 // properties only for types that have an exported definition, so without these the colors
-// ThemeClassificationFormats.ApplyBuildOutput sets are never picked up. They stay colorless —
+// BuildOutputClassificationTypes.ApplyTheme sets are never picked up. They stay colorless —
 // the theme is the single source of colors (unthemed definitions get cleared on theme apply).
 #pragma warning disable CA1812 // Instantiated by the composition container.
 

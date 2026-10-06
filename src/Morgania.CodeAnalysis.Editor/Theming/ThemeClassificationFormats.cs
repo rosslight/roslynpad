@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia.Media;
@@ -9,12 +10,11 @@ using Microsoft.VisualStudio.Text.Formatting;
 using Morgania.CodeAnalysis.Editor.Classification;
 using RoslynPad.Themes;
 
-namespace RoslynPad.Editor;
+namespace Morgania.CodeAnalysis.Editor.Theming;
 
 /// <summary>
 /// Maps a VS Code theme onto Roslyn classification types.
-/// The static format definitions in ClassificationFormats.cs remain the fallback for types the
-/// theme does not style.
+/// Unthemed classifications inherit their parent classification or the default foreground.
 /// </summary>
 public sealed partial class ThemeClassificationFormats
 {
@@ -26,8 +26,8 @@ public sealed partial class ThemeClassificationFormats
     public ThemeClassificationFormats(Theme theme)
     {
         _theme = theme;
-        DefaultForeground = theme.TryGetColor("editor.foreground") is { } foreground ? ThemeDictionaryBase.ParseThemeColor(foreground) : null;
-        Background = theme.TryGetColor("editor.background") is { } background ? ThemeDictionaryBase.ParseThemeColor(background) : null;
+        DefaultForeground = theme.TryGetColor("editor.foreground") is { } foreground ? ParseThemeColor(foreground) : null;
+        Background = theme.TryGetColor("editor.background") is { } background ? ParseThemeColor(background) : null;
 
         _styles = s_classifiedScopes
             .Select(t => (t.classification, style: GetStyleForScopes(theme, t.scopes)))
@@ -124,7 +124,7 @@ public sealed partial class ThemeClassificationFormats
         {
             if (_theme.TryGetColor(colorId) is { } color)
             {
-                properties[property] = new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(color));
+                properties[property] = new SolidColorBrush(ParseThemeColor(color));
             }
         }
     }
@@ -151,7 +151,7 @@ public sealed partial class ThemeClassificationFormats
         {
             if (_theme.TryGetColor(colorId) is { } color)
             {
-                properties[property] = new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(color));
+                properties[property] = new SolidColorBrush(ParseThemeColor(color));
             }
         }
     }
@@ -167,7 +167,7 @@ public sealed partial class ThemeClassificationFormats
         {
             var properties = new Avalonia.Controls.ResourceDictionary
             {
-                [BackgroundWorkIndicatorFormatNames.Foreground] = new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(color)),
+                [BackgroundWorkIndicatorFormatNames.Foreground] = new SolidColorBrush(ParseThemeColor(color)),
             };
             formatMap.SetProperties(BackgroundWorkIndicatorFormatNames.Name, properties);
         }
@@ -186,7 +186,7 @@ public sealed partial class ThemeClassificationFormats
             var properties = new Avalonia.Controls.ResourceDictionary
             {
                 [Morgania.CodeAnalysis.Editor.BlockStructureFormatNames.Foreground] =
-                    new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(color)),
+                    new SolidColorBrush(ParseThemeColor(color)),
             };
             formatMap.SetProperties(Morgania.CodeAnalysis.Editor.BlockStructureFormatNames.Name, properties);
         }
@@ -206,7 +206,7 @@ public sealed partial class ThemeClassificationFormats
                 new Avalonia.Controls.ResourceDictionary
                 {
                     [Microsoft.VisualStudio.Text.Editor.Implementation.OutliningMarginFormatNames.Foreground] =
-                        new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(chevron)),
+                        new SolidColorBrush(ParseThemeColor(chevron)),
                 });
         }
 
@@ -217,7 +217,7 @@ public sealed partial class ThemeClassificationFormats
                 new Avalonia.Controls.ResourceDictionary
                 {
                     [Microsoft.VisualStudio.Text.Editor.Implementation.CollapsedAdornmentFormatNames.Foreground] =
-                        new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(placeholder)),
+                        new SolidColorBrush(ParseThemeColor(placeholder)),
                 });
         }
     }
@@ -239,7 +239,7 @@ public sealed partial class ThemeClassificationFormats
             {
                 formatMap.SetProperties(key, new Avalonia.Controls.ResourceDictionary
                 {
-                    [EditorFormatDefinition.BackgroundColorId] = ThemeDictionaryBase.ParseThemeColor(color),
+                    [EditorFormatDefinition.BackgroundColorId] = ParseThemeColor(color),
                 });
             }
         }
@@ -254,7 +254,7 @@ public sealed partial class ThemeClassificationFormats
     public void ApplyCaret(IEditorFormatMap formatMap)
     {
         var color = _theme.TryGetColor("editorCursor.foreground") is { } cursor
-            ? ThemeDictionaryBase.ParseThemeColor(cursor)
+            ? ParseThemeColor(cursor)
             : _theme.Type == ThemeType.Light ? Colors.Black : Color.FromRgb(0xAE, 0xAF, 0xAD);
 
         var properties = new Avalonia.Controls.ResourceDictionary
@@ -332,7 +332,7 @@ public sealed partial class ThemeClassificationFormats
                 return;
             }
 
-            var color = ThemeDictionaryBase.ParseThemeColor(themeColor);
+            var color = ParseThemeColor(themeColor);
             var properties = TextFormattingRunProperties.CreateTextFormattingRunProperties()
                 .SetForeground(color);
             if (withBackground)
@@ -341,36 +341,6 @@ public sealed partial class ThemeClassificationFormats
             }
 
             formatMap.SetExplicitTextProperties(type, properties);
-        }
-    }
-
-    /// <summary>
-    /// Feeds the theme's colors to the build output pane's classification types (VSColorOutput's
-    /// scheme). The colors resolve through the theme's own palette — severity foregrounds and the
-    /// terminal ANSI colors — so both light and dark themes are correct by construction.
-    /// BuildText stays unstyled and inherits the default foreground.
-    /// </summary>
-    public void ApplyBuildOutput(IClassificationFormatMap formatMap, IClassificationTypeRegistryService registry)
-    {
-        Set(BuildOutputClassificationTypes.BuildHead, "terminal.ansiGreen");
-        Set(BuildOutputClassificationTypes.LogError, "editorError.foreground");
-        Set(BuildOutputClassificationTypes.LogWarning, "editorWarning.foreground");
-        Set(BuildOutputClassificationTypes.LogInformation, "editorInfo.foreground");
-        Set(BuildOutputClassificationTypes.LogCustom1, "terminal.ansiCyan");
-        Set(BuildOutputClassificationTypes.LogCustom2, "terminal.ansiMagenta");
-        Set(BuildOutputClassificationTypes.LogCustom3, "terminal.ansiBrightMagenta");
-        Set(BuildOutputClassificationTypes.LogCustom4, "terminal.ansiBrightYellow");
-
-        void Set(string classification, string colorId)
-        {
-            if (_theme.TryGetColor(colorId) is not { } themeColor ||
-                registry.GetClassificationType(classification) is not { } type)
-            {
-                return;
-            }
-
-            formatMap.SetExplicitTextProperties(type, TextFormattingRunProperties.CreateTextFormattingRunProperties()
-                .SetForeground(ThemeDictionaryBase.ParseThemeColor(themeColor)));
         }
     }
 
@@ -403,12 +373,12 @@ public sealed partial class ThemeClassificationFormats
         var properties = new Avalonia.Controls.ResourceDictionary();
         if (background is not null)
         {
-            properties[MarkerFormatDefinition.FillId] = new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(background));
+            properties[MarkerFormatDefinition.FillId] = new SolidColorBrush(ParseThemeColor(background));
         }
 
         if (border is not null)
         {
-            properties[MarkerFormatDefinition.BorderId] = new Pen(new SolidColorBrush(ThemeDictionaryBase.ParseThemeColor(border)));
+            properties[MarkerFormatDefinition.BorderId] = new Pen(new SolidColorBrush(ParseThemeColor(border)));
         }
 
         formatMap.SetProperties(markerName, properties);
@@ -445,7 +415,7 @@ public sealed partial class ThemeClassificationFormats
 
     private static Dictionary<string, string[]> ReadScopes(string name)
     {
-        using var stream = typeof(ThemeClassificationFormats).Assembly.GetManifestResourceStream($"RoslynPad.Editor.Resources.{name}.json")
+        using var stream = typeof(ThemeClassificationFormats).Assembly.GetManifestResourceStream($"Morgania.CodeAnalysis.Editor.Theming.Resources.{name}.json")
             ?? throw new InvalidOperationException("Stream not found");
         return JsonSerializer.Deserialize(stream, ScopesJsonContext.Default.DictionaryStringStringArray)
             ?? throw new InvalidOperationException($"Empty {name}.json");
@@ -458,8 +428,22 @@ public sealed partial class ThemeClassificationFormats
     private static ThemeStyle? GetStyleForScopes(Theme theme, string[] scopes) =>
         scopes.Select(theme.TryGetScopeSettings).FirstOrDefault(s => s is not null) is { } scopeSettings
         ? new ThemeStyle(
-            Foreground: scopeSettings.Value.Foreground is { } foreground ? ThemeDictionaryBase.ParseThemeColor(foreground) : null,
+            Foreground: scopeSettings.Value.Foreground is { } foreground ? ParseThemeColor(foreground) : null,
             Bold: scopeSettings.Value.FontStyle?.Contains("bold", StringComparison.OrdinalIgnoreCase) == true,
             Italic: scopeSettings.Value.FontStyle?.Contains("italic", StringComparison.OrdinalIgnoreCase) == true)
         : null;
+
+    /// <summary>
+    /// Parses a VS Code theme color, which uses CSS #RRGGBBAA ordering for 8-digit hex values
+    /// (Avalonia's <see cref="Avalonia.Media.Color.Parse(string)"/> would read those as #AARRGGBB).
+    /// </summary>
+    public static Color ParseThemeColor(string color)
+    {
+        if (color.Length == 9 && color[0] == '#' && uint.TryParse(color.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgba))
+        {
+            return Color.FromUInt32(((rgba & 0xFF) << 24) | (rgba >> 8));
+        }
+
+        return Color.Parse(color);
+    }
 }

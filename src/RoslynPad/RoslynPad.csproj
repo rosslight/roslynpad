@@ -29,7 +29,6 @@
   <ItemGroup>
     <AvaloniaResource Include="Resources\RoslynPad.ico" />
     <AvaloniaXaml Remove="bin\**\*.axaml;obj\**\*.axaml" />
-    <EmbeddedResource Include="Editor\Resources\*.json" LogicalName="RoslynPad.Editor.Resources.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia.Desktop" />
